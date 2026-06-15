@@ -6,4 +6,7 @@ data/*.sqlite3
 data/*.sqlite3-*
 *.pt
 runs/
+.DS_Store
 
+outputs/*
+!outputs/.gitkeep
