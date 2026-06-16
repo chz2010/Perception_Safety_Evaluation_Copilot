@@ -59,7 +59,8 @@ Run the app:
 streamlit run app.py
 ```
 
-The first YOLO run may download model weights such as `yolov8n.pt`.
+The first YOLO run may download model weights such as `yolov8n.pt` or
+`yolo11s.pt`.
 
 Run tests:
 
@@ -143,7 +144,8 @@ Project 1's current MCP server is still the right long-term interface for standa
 - Optional local nuScenes image sample loading.
 - Optional Project 1 nuScenes safety profile context in generated reports.
 - Batch results dashboard for Colab-generated CSV and Markdown outputs.
-- YOLO model selection from lightweight model options.
+- YOLO model selection with YOLOv8 and YOLO11 options, including `yolo11s.pt`
+  for stronger portfolio experiments.
 - Confidence threshold controls.
 - Low-confidence threshold controls for safety review.
 - Detection overlay using OpenCV.
@@ -163,15 +165,30 @@ outputs/
   perception_failure_report.md
 ```
 
+For model comparisons, prefer model-specific output names:
+
+```text
+outputs/
+  perception_yolo_results_yolov8n_conf0p25.csv
+  perception_eval_summary_yolov8n_conf0p25.csv
+  perception_failure_report_yolov8n_conf0p25.md
+  perception_yolo_results_yolo11s_conf0p25.csv
+  perception_eval_summary_yolo11s_conf0p25.csv
+  perception_failure_report_yolo11s_conf0p25.md
+```
+
 Then start the app and choose `Batch Results Dashboard` in the sidebar:
 
 ```bash
 streamlit run app.py
 ```
 
-The dashboard shows aggregate image counts, detections, expected objects, missed
-objects, low-confidence detections, mean recall, class distributions, lowest
-recall images, and the generated batch report.
+The dashboard reads both the original filenames and model-specific filenames. It
+shows aggregate image counts, detections, expected objects, missed objects,
+low-confidence detections, mean recall, model/run comparison, class
+distributions, lowest recall images, the generated batch report, and a safety
+lens section that interprets the run using ISO 26262, ISO 21448 / SOTIF, and
+ISO 8800 concepts from Project 1.
 
 ## Next Milestones
 
@@ -183,6 +200,8 @@ recall images, and the generated batch report.
 2. Add MLflow tracking.
    - Track model name, thresholds, metrics, image metadata, and report artifacts.
    - Compare YOLO model versions and threshold strategies.
+   - Recommended first comparison: `yolov8n.pt` versus `yolo11s.pt` at
+     confidence thresholds `0.25` and `0.50`.
 
 3. Add Project 1 MCP retrieval.
    - Pull ISO 26262, ISO 21448/SOTIF, and ISO 8800 context.

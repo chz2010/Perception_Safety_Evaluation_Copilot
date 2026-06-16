@@ -55,8 +55,11 @@ def describe_safety_impact(result: EvaluationResult) -> list[str]:
 def recommended_tests(result: EvaluationResult) -> list[str]:
     tests = [
         "Repeat the scenario with multiple confidence thresholds and document threshold sensitivity.",
-        "Add labeled ground truth boxes so future evaluation can use IoU-based object matching.",
     ]
+    if result.iou_evaluation is None:
+        tests.append("Add labeled ground truth boxes so future evaluation can use IoU-based object matching.")
+    else:
+        tests.append("Review unmatched IoU detections and missed boxes as formal perception failure candidates.")
 
     if result.missed_objects:
         tests.append("Create focused regression tests for each missed object class and similar edge cases.")
@@ -91,6 +94,27 @@ def generate_markdown_report(
         )
     else:
         metrics.append("- Precision/recall: not available without ground truth")
+    if result.iou_evaluation is not None:
+        iou = result.iou_evaluation
+        metrics.extend(
+            [
+                f"- IoU threshold: {iou.threshold:.2f}",
+                f"- IoU matched detections: {iou.matched_detections}",
+                f"- IoU unmatched detections: {iou.unmatched_detections}",
+                f"- IoU unmatched ground truth: {iou.unmatched_ground_truth}",
+                f"- Mean matched IoU: {'N/A' if iou.mean_iou is None else f'{iou.mean_iou:.3f}'}",
+                f"- mAP50: {'N/A' if result.map50 is None else f'{result.map50:.3f}'}",
+                f"- mAP50-95: {'N/A' if result.map50_95 is None else f'{result.map50_95:.3f}'}",
+            ]
+        )
+    else:
+        metrics.extend(
+            [
+                "- IoU threshold: 0.50 (not applied without bounding-box ground truth)",
+                "- mAP50: not available without bounding-box ground truth",
+                "- mAP50-95: not available without bounding-box ground truth",
+            ]
+        )
 
     lines = [
         "# Perception Safety Evaluation Report",
@@ -117,9 +141,8 @@ def generate_markdown_report(
         *[f"- {test}" for test in recommended_tests(result)],
         "",
         "## Notes",
-        "- This MVP uses class-count comparison for optional ground truth.",
-        "- Future versions should add bounding-box ground truth and IoU matching for formal perception evaluation.",
+        "- Count-based precision/recall is used when only class counts are available.",
+        "- IoU, mAP50, and mAP50-95 require bounding-box ground truth, such as projected nuScenes annotations.",
         "- Connect Project 1 for standards context and Project 2 for requirements, traceability, test cases, AgentOps, and MLflow workflows.",
     ]
     return "\n".join(lines)
-
