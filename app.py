@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +34,12 @@ from src.perception_safety_copilot.storage import (
     load_recent_evaluations,
     save_evaluation,
 )
+
+
+OUTPUTS_DIR = Path("outputs")
+BATCH_DETECTIONS_PATH = OUTPUTS_DIR / "perception_yolo_results.csv"
+BATCH_SUMMARY_PATH = OUTPUTS_DIR / "perception_eval_summary.csv"
+BATCH_REPORT_PATH = OUTPUTS_DIR / "perception_failure_report.md"
 
 
 st.set_page_config(
@@ -115,8 +122,122 @@ def render_recent_history() -> None:
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
+def parse_count_dict(value) -> dict[str, int]:
+    if isinstance(value, dict):
+        return value
+    if pd.isna(value):
+        return {}
+    try:
+        parsed = ast.literal_eval(str(value))
+    except (SyntaxError, ValueError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {str(label): int(count) for label, count in parsed.items()}
+
+
+def aggregate_count_column(series: pd.Series) -> pd.DataFrame:
+    counts: dict[str, int] = {}
+    for value in series:
+        for label, count in parse_count_dict(value).items():
+            counts[label] = counts.get(label, 0) + count
+    if not counts:
+        return pd.DataFrame(columns=["label", "count"])
+    return (
+        pd.DataFrame([{"label": label, "count": count} for label, count in counts.items()])
+        .sort_values("count", ascending=False)
+        .reset_index(drop=True)
+    )
+
+
+def render_batch_dashboard() -> None:
+    st.subheader("Batch Evaluation Results")
+    st.caption("Colab-generated perception evaluation artifacts from `outputs/`.")
+
+    if not BATCH_SUMMARY_PATH.exists() or not BATCH_DETECTIONS_PATH.exists():
+        st.info(
+            "Batch outputs were not found yet. Run the Colab notebook, then place "
+            "`perception_eval_summary.csv` and `perception_yolo_results.csv` in `outputs/`."
+        )
+        return
+
+    summary_df = pd.read_csv(BATCH_SUMMARY_PATH)
+    detections_df = pd.read_csv(BATCH_DETECTIONS_PATH)
+
+    metric_cols = st.columns(6)
+    metric_cols[0].metric("Images", f"{len(summary_df):,}")
+    metric_cols[1].metric("Detections", f"{len(detections_df):,}")
+    metric_cols[2].metric("Expected", f"{int(summary_df['expected_total'].sum()):,}")
+    metric_cols[3].metric("Missed", f"{int(summary_df['missed_total'].sum()):,}")
+    metric_cols[4].metric("Low Conf.", f"{int(summary_df['low_confidence_total'].sum()):,}")
+    metric_cols[5].metric("Mean Recall", f"{summary_df['recall'].mean():.2f}")
+
+    st.divider()
+    left, right = st.columns([1, 1])
+
+    with left:
+        st.markdown("#### Detections By Class")
+        class_counts = detections_df["label"].value_counts().reset_index()
+        class_counts.columns = ["label", "count"]
+        st.bar_chart(class_counts.set_index("label"))
+        st.dataframe(class_counts, use_container_width=True, hide_index=True)
+
+    with right:
+        st.markdown("#### Missed Objects By Class")
+        missed_counts = aggregate_count_column(summary_df["missed_objects"])
+        if missed_counts.empty:
+            st.success("No missed objects recorded in the batch summary.")
+        else:
+            st.bar_chart(missed_counts.set_index("label"))
+            st.dataframe(missed_counts, use_container_width=True, hide_index=True)
+
+    st.markdown("#### Lowest Recall Images")
+    worst_cases = summary_df.sort_values(["recall", "missed_total"], ascending=[True, False]).head(20)
+    st.dataframe(
+        worst_cases[
+            [
+                "image",
+                "detected_total",
+                "expected_total",
+                "missed_total",
+                "false_positive_total",
+                "low_confidence_total",
+                "precision",
+                "recall",
+                "missed_objects",
+            ]
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown("#### Low Confidence Examples")
+    low_conf = detections_df[detections_df["low_confidence"] == True].copy()
+    if low_conf.empty:
+        st.success("No low-confidence detections recorded.")
+    else:
+        st.dataframe(
+            low_conf.sort_values("confidence").head(50),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    if BATCH_REPORT_PATH.exists():
+        st.markdown("#### Colab Batch Report")
+        st.markdown(BATCH_REPORT_PATH.read_text(encoding="utf-8"))
+
+
 st.title("Perception Safety Evaluation Copilot")
 st.caption("MVP for image-based object detection, perception failure analysis, and safety-focused reporting.")
+
+app_mode = st.sidebar.radio(
+    "App mode",
+    ["Single Image Evaluation", "Batch Results Dashboard"],
+)
+
+if app_mode == "Batch Results Dashboard":
+    render_batch_dashboard()
+    st.stop()
 
 with st.sidebar:
     st.header("Evaluation Setup")

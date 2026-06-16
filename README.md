@@ -120,6 +120,21 @@ If Project 1 only contains `v1.0-trainval`, then Project 3 can still use the
 metadata-derived Project 1 safety profile, but it cannot display camera images
 until the matching `samples/CAM_*` files are available.
 
+If Google Drive space is limited, create a small subset locally instead of
+uploading the full dataset:
+
+```bash
+python scripts/create_nuscenes_colab_subset.py \
+  --metadata-root /path/to/nuscenes/v1.0-trainval \
+  --data-root /path/to/nuscenes \
+  --output-root ~/Desktop/nuscenes_subset \
+  --channel CAM_FRONT \
+  --limit 200
+```
+
+Then upload only `~/Desktop/nuscenes_subset` or a zip of that folder to Colab or
+Google Drive.
+
 Project 1's current MCP server is still the right long-term interface for standards retrieval. This MVP uses the local Project 1 nuScenes profile as a lightweight bridge first, so Project 3 remains runnable even when the MCP server is not active. The next integration step is to replace that local profile read with a live MCP call to `search_combined_safety_context`.
 
 ## Current MVP Capabilities
@@ -127,6 +142,7 @@ Project 1's current MCP server is still the right long-term interface for standa
 - Image upload for JPG, JPEG, and PNG.
 - Optional local nuScenes image sample loading.
 - Optional Project 1 nuScenes safety profile context in generated reports.
+- Batch results dashboard for Colab-generated CSV and Markdown outputs.
 - YOLO model selection from lightweight model options.
 - Confidence threshold controls.
 - Low-confidence threshold controls for safety review.
@@ -135,6 +151,27 @@ Project 1's current MCP server is still the right long-term interface for standa
 - SQLite persistence in `data/perception_evaluations.sqlite3`.
 - Recent evaluation history in the sidebar.
 - Downloadable Markdown safety report.
+
+## Batch Evaluation Dashboard
+
+After running the Colab notebook, place these files in `outputs/`:
+
+```text
+outputs/
+  perception_yolo_results.csv
+  perception_eval_summary.csv
+  perception_failure_report.md
+```
+
+Then start the app and choose `Batch Results Dashboard` in the sidebar:
+
+```bash
+streamlit run app.py
+```
+
+The dashboard shows aggregate image counts, detections, expected objects, missed
+objects, low-confidence detections, mean recall, class distributions, lowest
+recall images, and the generated batch report.
 
 ## Next Milestones
 
