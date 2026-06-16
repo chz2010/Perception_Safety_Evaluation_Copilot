@@ -4,19 +4,6 @@ Project 3 portfolio MVP: a computer-vision evaluation tool that connects percept
 
 ## Highlight Screenshots
 
-Put your portfolio screenshots here in the repo:
-
-```text
-assets/screenshots/
-```
-
-Current screenshots used in this README:
-
-- `assets/screenshots/Safety_Lens_1.png`
-- `assets/screenshots/Safety_Lens_2.png`
-- `assets/screenshots/Safety_Lens_3.png`
-- `assets/screenshots/Safety_Lens_4.png`
-
 ![Safety Lens 1](assets/screenshots/Safety_Lens_1.png)
 *Single-image evaluation with the original scene, detected objects, and the Safety Lens workflow.*
 
