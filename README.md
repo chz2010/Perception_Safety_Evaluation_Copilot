@@ -2,6 +2,33 @@
 
 Project 3 portfolio MVP: a computer-vision evaluation tool that connects perception AI results with safety engineering reasoning.
 
+## Highlight Screenshots
+
+Put your portfolio screenshots here in the repo:
+
+```text
+assets/screenshots/
+```
+
+Current screenshots used in this README:
+
+- `assets/screenshots/Safety_Lens_1.png`
+- `assets/screenshots/Safety_Lens_2.png`
+- `assets/screenshots/Safety_Lens_3.png`
+- `assets/screenshots/Safety_Lens_4.png`
+
+![Safety Lens 1](assets/screenshots/Safety_Lens_1.png)
+*Single-image evaluation with the original scene, detected objects, and the Safety Lens workflow.*
+
+![Safety Lens 2](assets/screenshots/Safety_Lens_2.png)
+*Safety Lens v2 translating perception failures into standards-aware safety interpretation.*
+
+![Safety Lens 3](assets/screenshots/Safety_Lens_3.png)
+*Detailed safety output connecting observed perception gaps to ISO 21448 / SOTIF, ISO 8800, and ISO 26262 reasoning.*
+
+![Safety Lens 4](assets/screenshots/Safety_Lens_4.png)
+*Portfolio-ready view of the perception safety evaluation experience and report structure.*
+
 This first version focuses on a small, runnable workflow:
 
 - Upload a driving image.
@@ -28,6 +55,8 @@ Perception_Safety_Evaluation_Copilot/
   app.py
   requirements.txt
   README.md
+  assets/
+    screenshots/
   data/
   src/
     perception_safety_copilot/
@@ -36,9 +65,11 @@ Perception_Safety_Evaluation_Copilot/
       nuscenes_connector.py
       project1_bridge.py
       reporting.py
+      safety_lens.py
       storage.py
   tests/
     test_evaluation.py
+    test_safety_lens.py
 ```
 
 ## Local Setup
