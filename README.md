@@ -4,6 +4,9 @@ Project 3 portfolio MVP: a computer-vision evaluation tool that connects percept
 
 ## Highlight Screenshots
 
+![Safety Lens 0](assets/screenshots/Safety_Lens_0.png)
+*Hero view of the Perception Safety Evaluation Copilot, combining perception outputs with safety-focused analysis.*
+
 ![Safety Lens 1](assets/screenshots/Safety_Lens_1.png)
 *Single-image evaluation with the original scene, detected objects, and the Safety Lens workflow.*
 
