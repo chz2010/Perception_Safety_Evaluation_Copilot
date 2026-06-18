@@ -87,5 +87,70 @@ def test_generate_safety_report_includes_required_sections():
     assert "Recommended ISO 8800-style actions:" in report
     assert "ISO 26262:" in report
     assert "Recommended ISO 26262-style actions:" in report
+    assert "Robustness conclusion:" in report
     assert "Evidence summary:" in report
     assert "Final conclusion:" in report
+
+
+def test_safety_report_mentions_enhancement_failure_when_present():
+    result = evaluate_safety_lens(
+        raw_detections=[],
+        display_detections=[],
+        expected_objects={"person": 1},
+        display_threshold=0.90,
+        low_conf_threshold=0.50,
+        scenario_tags=infer_scenario_tags("Nighttime rainy urban crosswalk"),
+        metrics={"recall": 0.0, "enhancement_failure_detected": True},
+    )
+
+    report = generate_safety_report(
+        result,
+        scenario_name="Nighttime rainy urban crosswalk",
+        metrics={
+            "precision": 0.0,
+            "recall": 0.0,
+            "display_threshold": 0.90,
+            "low_confidence_threshold": 0.50,
+            "map50": None,
+            "map50_95": None,
+            "enhancement_failure_detected": True,
+            "enhancement_best_variant": "Original",
+            "ground_truth_boxes_available": False,
+        },
+    )
+
+    assert "Preprocessing did not improve perception performance" in report
+    assert "Robustness conclusion:" in report
+
+
+def test_recommendations_change_with_failure_context():
+    nighttime_pedestrian = evaluate_safety_lens(
+        raw_detections=[],
+        display_detections=[],
+        expected_objects={"person": 1},
+        display_threshold=0.80,
+        low_conf_threshold=0.50,
+        scenario_tags=infer_scenario_tags("Nighttime urban crosswalk"),
+    )
+    traffic_light_case = evaluate_safety_lens(
+        raw_detections=[],
+        display_detections=[],
+        expected_objects={"traffic light": 1},
+        display_threshold=0.80,
+        low_conf_threshold=0.50,
+        scenario_tags=infer_scenario_tags("Rainy intersection with signal glare"),
+    )
+
+    sotif_ped = next(
+        finding for finding in nighttime_pedestrian.standard_specific_findings if finding.standard == "ISO 21448 / SOTIF"
+    )
+    iso8800_light = next(
+        finding for finding in traffic_light_case.standard_specific_findings if finding.standard == "ISO 8800"
+    )
+    iso26262_light = next(
+        finding for finding in traffic_light_case.standard_specific_findings if finding.standard == "ISO 26262"
+    )
+
+    assert any("nighttime" in item.lower() for item in sotif_ped.recommendations)
+    assert any("traffic lights" in item.lower() or "traffic-signal" in item.lower() for item in iso8800_light.recommendations)
+    assert any("traffic-signal" in item.lower() for item in iso26262_light.recommendations)

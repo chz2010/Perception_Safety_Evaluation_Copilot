@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import hashlib
+import json
 from pathlib import Path
 
 import numpy as np
@@ -30,7 +32,26 @@ from src.perception_safety_copilot.project1_bridge import (
     load_nuscenes_safety_profile,
     load_project1_standard_context,
 )
+from src.perception_safety_copilot.learned_enhancement import (
+    ZeroDceModelUnavailable,
+    apply_zero_dce_low_light,
+    load_zero_dce_model,
+)
+from src.perception_safety_copilot.preprocessing import (
+    assess_visibility,
+    build_enhancement_variants,
+    enhance_image_for_visibility,
+)
+from src.perception_safety_copilot.llm_assist import (
+    build_llm_assist_payload,
+    generate_local_llm_assist,
+    render_llm_assist_markdown,
+)
 from src.perception_safety_copilot.reporting import generate_markdown_report
+from src.perception_safety_copilot.scenario_retrieval import (
+    render_retrieval_markdown,
+    retrieve_project1_evidence,
+)
 from src.perception_safety_copilot.safety_lens import (
     evaluate_safety_lens,
     generate_safety_report,
@@ -61,6 +82,11 @@ st.set_page_config(
 @st.cache_resource(show_spinner="Loading YOLO model...")
 def get_model(model_name: str):
     return load_yolo_model(model_name)
+
+
+@st.cache_resource(show_spinner="Loading Zero-DCE learned enhancement model...")
+def get_zero_dce_model():
+    return load_zero_dce_model()
 
 
 @st.cache_data(show_spinner=False)
@@ -137,6 +163,104 @@ def render_detection_table(records: list[dict]) -> None:
     table[["x1", "y1", "x2", "y2"]] = pd.DataFrame(table["bbox_xyxy"].tolist(), index=table.index)
     table = table.drop(columns=["bbox_xyxy"])
     st.dataframe(table, use_container_width=True, hide_index=True)
+
+
+def run_enhancement_comparison(
+    model,
+    image_rgb: np.ndarray,
+    image_name: str,
+    model_name: str,
+    confidence_threshold: float,
+    gamma_value: float,
+    sharpening_strength: float,
+    learned_variant_name: str | None = None,
+    learned_variant_image: np.ndarray | None = None,
+) -> pd.DataFrame:
+    rows = []
+    for variant in build_enhancement_variants(
+        image_rgb,
+        gamma=gamma_value,
+        sharpening_strength=sharpening_strength,
+    ):
+        detections = run_yolo_detection(
+            model,
+            variant.image_rgb,
+            INTERNAL_CANDIDATE_THRESHOLD,
+            image_id=image_name,
+            model_name=model_name,
+        )
+        display_detections = [detection for detection in detections if detection.confidence >= confidence_threshold]
+        rows.append(
+            {
+                "enhancement": variant.name,
+                "detections": len(display_detections),
+                "raw_candidates": len(detections),
+                "labels": ", ".join(sorted({d.label for d in display_detections})) or "None",
+                "mean_confidence": round(
+                    sum(d.confidence for d in display_detections) / len(display_detections),
+                    3,
+                )
+                if display_detections
+                else 0.0,
+            }
+        )
+    if learned_variant_name and learned_variant_image is not None:
+        detections = run_yolo_detection(
+            model,
+            learned_variant_image,
+            INTERNAL_CANDIDATE_THRESHOLD,
+            image_id=image_name,
+            model_name=model_name,
+        )
+        display_detections = [detection for detection in detections if detection.confidence >= confidence_threshold]
+        rows.append(
+            {
+                "enhancement": learned_variant_name,
+                "detections": len(display_detections),
+                "raw_candidates": len(detections),
+                "labels": ", ".join(sorted({d.label for d in display_detections})) or "None",
+                "mean_confidence": round(
+                    sum(d.confidence for d in display_detections) / len(display_detections),
+                    3,
+                )
+                if display_detections
+                else 0.0,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def run_model_benchmark(
+    model_names: list[str],
+    image_rgb: np.ndarray,
+    image_name: str,
+    confidence_threshold: float,
+) -> pd.DataFrame:
+    rows = []
+    for benchmark_model_name in model_names:
+        detections = run_yolo_detection(
+            get_model(benchmark_model_name),
+            image_rgb,
+            INTERNAL_CANDIDATE_THRESHOLD,
+            image_id=image_name,
+            model_name=benchmark_model_name,
+        )
+        display_detections = [detection for detection in detections if detection.confidence >= confidence_threshold]
+        rows.append(
+            {
+                "model": benchmark_model_name,
+                "detections": len(display_detections),
+                "raw_candidates": len(detections),
+                "labels": ", ".join(sorted({d.label for d in display_detections})) or "None",
+                "mean_confidence": round(
+                    sum(d.confidence for d in display_detections) / len(display_detections),
+                    3,
+                )
+                if display_detections
+                else 0.0,
+            }
+        )
+    return pd.DataFrame(rows).sort_values(["detections", "raw_candidates", "mean_confidence"], ascending=False).reset_index(drop=True)
 
 
 def render_recent_history() -> None:
@@ -492,11 +616,52 @@ with st.sidebar:
     st.header("Evaluation Setup")
     model_name = st.selectbox(
         "YOLO model",
-        ["yolov8n.pt", "yolov8s.pt", "yolo11n.pt", "yolo11s.pt"],
+        ["yolov8n.pt", "yolov8s.pt", "yolo11n.pt", "yolo11s.pt", "yolo11m.pt", "yolo11l.pt", "yolo11x.pt"],
         index=0,
     )
     confidence_threshold = st.slider("Detection confidence threshold", 0.05, 0.95, 0.25, 0.05)
     low_confidence_threshold = st.slider("Low-confidence safety threshold", 0.10, 0.95, 0.50, 0.05)
+    st.divider()
+    st.header("Image Enhancement")
+    enable_enhancement = st.checkbox("Enable inference image enhancement", value=False)
+    use_clahe = st.checkbox("CLAHE", value=True, disabled=not enable_enhancement)
+    use_gamma = st.checkbox("Gamma correction", value=True, disabled=not enable_enhancement)
+    gamma_value = st.slider("Gamma", 0.6, 2.0, 1.2, 0.1, disabled=not (enable_enhancement and use_gamma))
+    use_sharpening = st.checkbox("Sharpening", value=True, disabled=not enable_enhancement)
+    sharpening_strength = st.slider(
+        "Sharpening strength",
+        0.0,
+        1.5,
+        1.0,
+        0.1,
+        disabled=not (enable_enhancement and use_sharpening),
+    )
+    run_enhancement_table = st.checkbox(
+        "Run enhancement comparison table",
+        value=True,
+        help="Runs YOLO on Original, CLAHE, Gamma, Sharpening, Combined, Deraining, Dehazing, and Low-Light variants.",
+    )
+    enable_zero_dce = st.checkbox(
+        "Enable learned low-light enhancement (Zero-DCE)",
+        value=False,
+        help="Optional learned enhancement model used for low-light robustness experiments.",
+    )
+    st.caption(
+        "Zero-DCE is loaded only when enabled. The official project states the code/model are for academic research "
+        "under a non-commercial license."
+    )
+    st.divider()
+    st.header("Disturbance Benchmark")
+    run_model_benchmark_table = st.checkbox(
+        "Benchmark larger YOLO models on this disturbance slice",
+        value=False,
+    )
+    benchmark_model_names = st.multiselect(
+        "Benchmark models",
+        ["yolo11s.pt", "yolo11m.pt", "yolo11l.pt", "yolo11x.pt"],
+        default=["yolo11s.pt", "yolo11m.pt", "yolo11l.pt"],
+        disabled=not run_model_benchmark_table,
+    )
     expected_objects_text = st.text_area(
         "Expected objects",
         value="person: 1\ncar: 2\ntraffic light: 1",
@@ -514,6 +679,21 @@ with st.sidebar:
         "Project 1 nuScenes profile",
         value=str(DEFAULT_NUSCENES_PROFILE),
         help="Used to enrich the safety report. Later this can be replaced by a live MCP call.",
+    )
+    st.divider()
+    st.header("LLM Assist")
+    enable_llm_assist = st.checkbox("Enable local LLM assist", value=False)
+    llm_model_name = st.text_input(
+        "Local LLM model",
+        value="qwen2.5:7b-instruct",
+        help="Used only for narrative assist. Deterministic severity and metrics remain the source of truth.",
+        disabled=not enable_llm_assist,
+    )
+    llm_base_url = st.text_input(
+        "Local LLM endpoint",
+        value="http://localhost:11434",
+        help="Ollama-compatible `/api/generate` endpoint.",
+        disabled=not enable_llm_assist,
     )
     st.divider()
     st.subheader("Saved Evaluations")
@@ -609,14 +789,71 @@ if image_rgb is None:
     st.info("Upload a driving image or select a nuScenes sample to run the perception safety evaluation.")
     st.stop()
 
-st.subheader("Input Preview")
-st.image(image_rgb, width="stretch")
+original_visibility = assess_visibility(image_rgb)
+inference_image_rgb = image_rgb
+learned_enhancement_name: str | None = None
+learned_enhancement_image: np.ndarray | None = None
+zero_dce_error: str | None = None
+if enable_enhancement:
+    inference_image_rgb = enhance_image_for_visibility(
+        image_rgb,
+        use_clahe=use_clahe,
+        use_gamma=use_gamma,
+        gamma=gamma_value,
+        use_sharpening=use_sharpening,
+        sharpening_strength=sharpening_strength,
+    )
+if enable_zero_dce:
+    try:
+        learned_enhancement_name = "Zero-DCE"
+        learned_enhancement_image = apply_zero_dce_low_light(image_rgb, model=get_zero_dce_model())
+    except ZeroDceModelUnavailable as exc:
+        zero_dce_error = str(exc)
+    except Exception as exc:
+        zero_dce_error = f"Zero-DCE enhancement failed: {exc}"
+enhanced_visibility = assess_visibility(inference_image_rgb)
+
+st.subheader("Input and Inference Preview")
+if enable_enhancement:
+    preview_left, preview_right = st.columns(2)
+    with preview_left:
+        st.caption("Uploaded image")
+        st.image(image_rgb, width="stretch")
+    with preview_right:
+        st.caption("Enhanced image used for YOLO inference")
+        st.image(inference_image_rgb, width="stretch")
+else:
+    st.caption("Uploaded image used directly for YOLO inference")
+    st.image(image_rgb, width="stretch")
+
+visibility_cols = st.columns(4)
+visibility_cols[0].metric("Visibility", enhanced_visibility.visibility_level)
+visibility_cols[1].metric("Visibility Score", f"{enhanced_visibility.visibility_score:.1f}")
+visibility_cols[2].metric("Brightness", f"{enhanced_visibility.brightness_mean:.1f}")
+visibility_cols[3].metric("Contrast", f"{enhanced_visibility.contrast_std:.1f}")
+
+if enable_enhancement:
+    with st.expander("Enhanced inference image and visibility details"):
+        preview_left, preview_right = st.columns(2)
+        with preview_left:
+            st.caption("Original visibility assessment")
+            st.json(original_visibility.__dict__)
+            st.image(image_rgb, width="stretch")
+        with preview_right:
+            st.caption("Enhanced image used for YOLO inference")
+            st.json(enhanced_visibility.__dict__)
+            st.image(inference_image_rgb, width="stretch")
+        if learned_enhancement_image is not None:
+            st.caption("Learned enhancement preview (Zero-DCE)")
+            st.image(learned_enhancement_image, width="stretch")
+        elif zero_dce_error:
+            st.warning(zero_dce_error)
 
 try:
     model = get_model(model_name)
     raw_detections = run_yolo_detection(
         model,
-        image_rgb,
+        inference_image_rgb,
         INTERNAL_CANDIDATE_THRESHOLD,
         image_id=image_name,
         model_name=model_name,
@@ -635,6 +872,21 @@ except Exception as exc:
     st.error(f"YOLO inference failed: {exc}")
     st.stop()
 
+enhancement_comparison_df = pd.DataFrame()
+if run_enhancement_table:
+    with st.spinner("Running enhancement comparison..."):
+        enhancement_comparison_df = run_enhancement_comparison(
+            model,
+            image_rgb,
+            image_name,
+            model_name,
+            confidence_threshold,
+            gamma_value,
+            sharpening_strength,
+            learned_variant_name=learned_enhancement_name,
+            learned_variant_image=learned_enhancement_image,
+        )
+
 display_detections = [detection for detection in raw_detections if detection.confidence >= confidence_threshold]
 expected_counts = parse_expected_objects(expected_objects_text)
 evaluation = evaluate_detections(
@@ -650,15 +902,69 @@ metrics = metrics_to_dict(evaluation)
 metrics["display_threshold"] = confidence_threshold
 metrics["low_confidence_threshold"] = low_confidence_threshold
 metrics["ground_truth_boxes_available"] = bool(nuscenes_ground_truth_boxes)
+metrics["visibility_level"] = enhanced_visibility.visibility_level
+metrics["visibility_score"] = enhanced_visibility.visibility_score
+metrics["brightness_mean"] = enhanced_visibility.brightness_mean
+metrics["contrast_std"] = enhanced_visibility.contrast_std
+metrics["sharpness_laplacian_var"] = enhanced_visibility.sharpness_laplacian_var
+metrics["image_enhancement_enabled"] = enable_enhancement
+metrics["image_enhancement_pipeline"] = {
+    "clahe": enable_enhancement and use_clahe,
+    "gamma_correction": enable_enhancement and use_gamma,
+    "gamma": gamma_value if enable_enhancement and use_gamma else None,
+    "sharpening": enable_enhancement and use_sharpening,
+    "sharpening_strength": sharpening_strength if enable_enhancement and use_sharpening else None,
+    "learned_low_light_zero_dce": enable_zero_dce,
+}
+metrics["zero_dce_error"] = zero_dce_error
+if not enhancement_comparison_df.empty:
+    original_row = enhancement_comparison_df[enhancement_comparison_df["enhancement"] == "Original"].iloc[0]
+    best_row = enhancement_comparison_df.sort_values(
+        ["detections", "raw_candidates", "mean_confidence"],
+        ascending=False,
+    ).iloc[0]
+    metrics["enhancement_comparison"] = enhancement_comparison_df.to_dict("records")
+    metrics["enhancement_best_variant"] = str(best_row["enhancement"])
+    metrics["enhancement_best_detections"] = int(best_row["detections"])
+    metrics["enhancement_original_detections"] = int(original_row["detections"])
+    metrics["enhancement_failure_detected"] = int(best_row["detections"]) <= int(original_row["detections"])
+else:
+    metrics["enhancement_failure_detected"] = False
+
+model_benchmark_df = pd.DataFrame()
+if run_model_benchmark_table and benchmark_model_names:
+    with st.spinner("Benchmarking larger YOLO models on this disturbance slice..."):
+        model_benchmark_df = run_model_benchmark(
+            benchmark_model_names,
+            inference_image_rgb,
+            image_name,
+            confidence_threshold,
+        )
+    if not model_benchmark_df.empty:
+        best_model_row = model_benchmark_df.iloc[0]
+        metrics["model_benchmark"] = model_benchmark_df.to_dict("records")
+        metrics["best_benchmark_model"] = str(best_model_row["model"])
+        metrics["best_benchmark_model_detections"] = int(best_model_row["detections"])
 scenario_tags = infer_scenario_tags(" ".join(part for part in [scenario_name, nuscenes_context] if part))
-report = generate_markdown_report(
-    scenario_name=scenario_name,
-    image_name=image_name,
-    detections=display_detections,
-    result=evaluation,
-    confidence_threshold=confidence_threshold,
-    low_confidence_threshold=low_confidence_threshold,
-)
+try:
+    report = generate_markdown_report(
+        scenario_name=scenario_name,
+        image_name=image_name,
+        detections=display_detections,
+        result=evaluation,
+        confidence_threshold=confidence_threshold,
+        low_confidence_threshold=low_confidence_threshold,
+        visibility_summary=metrics,
+    )
+except TypeError:
+    report = generate_markdown_report(
+        scenario_name=scenario_name,
+        image_name=image_name,
+        detections=display_detections,
+        result=evaluation,
+        confidence_threshold=confidence_threshold,
+        low_confidence_threshold=low_confidence_threshold,
+    )
 safety_lens_result = evaluate_safety_lens(
     raw_detections=raw_detections,
     display_detections=display_detections,
@@ -668,11 +974,34 @@ safety_lens_result = evaluate_safety_lens(
     scenario_tags=scenario_tags,
     metrics=metrics,
 )
-report = report + "\n\n" + generate_safety_report(
+safety_lens_markdown = generate_safety_report(
     safety_lens_result,
     scenario_name=scenario_name or nuscenes_context,
     metrics=metrics,
 )
+retrieval_bundle = retrieve_project1_evidence(
+    scenario_name=scenario_name or nuscenes_context,
+    scenario_tags=scenario_tags,
+    expected_objects=expected_counts,
+    low_confidence_expected_objects=safety_lens_result.low_confidence_expected_objects,
+    missed_expected_objects=safety_lens_result.missed_expected_objects,
+)
+retrieval_markdown = render_retrieval_markdown(retrieval_bundle)
+
+llm_payload = build_llm_assist_payload(
+    scenario_name=scenario_name or nuscenes_context,
+    scenario_tags=scenario_tags,
+    safety_result=safety_lens_result,
+    retrieval_bundle=retrieval_bundle,
+    metrics=metrics,
+)
+llm_payload_key = hashlib.sha256(json.dumps(llm_payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+if "llm_assist_results" not in st.session_state:
+    st.session_state["llm_assist_results"] = {}
+
+cached_llm_result = st.session_state["llm_assist_results"].get(llm_payload_key)
+report = report + "\n\n" + safety_lens_markdown + "\n\n" + retrieval_markdown
 if include_project1_context:
     project1_context = load_nuscenes_safety_profile(Path(project1_profile_path))
     standards_context = load_project1_standard_context()
@@ -695,13 +1024,53 @@ with result_center:
     st.image(annotated, width="stretch")
 
 st.subheader("Safety Lens")
-st.markdown(
-    generate_safety_report(
-        safety_lens_result,
-        scenario_name=scenario_name or nuscenes_context,
-        metrics=metrics,
-    )
+st.markdown(safety_lens_markdown)
+
+st.subheader("Scenario Retrieval Layer")
+st.markdown(retrieval_markdown)
+
+st.subheader("LLM Assist Layer")
+if not enable_llm_assist:
+    st.info("Enable local LLM assist in the sidebar to generate scene summary, HARA-style reasoning, and ASIL hint text.")
+else:
+    generate_llm = st.button("Generate / Refresh LLM Assist")
+    if generate_llm:
+        with st.spinner("Running local LLM assist..."):
+            cached_llm_result = generate_local_llm_assist(
+                llm_payload,
+                model_name=llm_model_name,
+                base_url=llm_base_url,
+            )
+            st.session_state["llm_assist_results"][llm_payload_key] = cached_llm_result
+    if cached_llm_result:
+        llm_markdown = render_llm_assist_markdown(cached_llm_result)
+        st.markdown(llm_markdown)
+        report = report + "\n\n" + llm_markdown
+    else:
+        st.caption("No local LLM assist generated yet for this evidence set.")
+
+st.subheader("Human Review Layer")
+review_state = st.radio(
+    "Engineer review decision",
+    ["Needs review", "Confirm", "Reject", "Edit"],
+    horizontal=True,
 )
+review_notes = st.text_area(
+    "Engineer review notes",
+    value="",
+    placeholder="Confirm, reject, or refine the scenario match, HARA-style reasoning, and ASIL hint here.",
+    height=120,
+)
+human_review_markdown = "\n".join(
+    [
+        "### Human Review Layer",
+        "",
+        f"- Engineer decision: {review_state}",
+        f"- Engineer notes: {review_notes or 'None'}",
+    ]
+)
+st.markdown(human_review_markdown)
+report = report + "\n\n" + human_review_markdown
 
 metric_cols = st.columns(7)
 metric_cols[0].metric("Detected", metrics["detected_total"])
@@ -718,6 +1087,36 @@ metric_cols[6].metric("mAP50-95", "N/A" if metrics["map50_95"] is None else f"{m
 st.subheader("Detection Results")
 render_detection_table(records)
 
+st.subheader("Enhancement Comparison Table")
+if enhancement_comparison_df.empty:
+    st.caption("Enhancement comparison was not run for this evaluation.")
+else:
+    st.dataframe(enhancement_comparison_df, use_container_width=True, hide_index=True)
+    if metrics.get("enhancement_failure_detected"):
+        st.warning(
+            "Preprocessing did not improve perception performance. This suggests the scenario may require "
+            "model-level robustness improvement or adverse-weather training data."
+        )
+    else:
+        st.success(
+            f"Best preprocessing variant: {metrics.get('enhancement_best_variant')} "
+            f"with {metrics.get('enhancement_best_detections')} detections."
+        )
+
+st.subheader("Disturbance Slice Model Benchmark")
+if model_benchmark_df.empty:
+    st.caption("Model benchmarking was not run for this evaluation.")
+else:
+    st.caption(
+        f"Scenario tags: {', '.join(scenario_tags) if scenario_tags else 'None'} | "
+        f"Visibility: {metrics.get('visibility_level', 'N/A')}"
+    )
+    st.dataframe(model_benchmark_df, use_container_width=True, hide_index=True)
+    st.info(
+        f"Best benchmark model on this disturbance slice: {metrics.get('best_benchmark_model')} "
+        f"with {metrics.get('best_benchmark_model_detections')} detections."
+    )
+
 st.subheader("Safety Evaluation")
 summary = pd.DataFrame(
     [
@@ -728,6 +1127,56 @@ summary = pd.DataFrame(
     ]
 )
 st.dataframe(summary, use_container_width=True, hide_index=True)
+
+if "failure_case_gallery" not in st.session_state:
+    st.session_state["failure_case_gallery"] = []
+
+gallery_entry = {
+    "scenario": scenario_name or nuscenes_context or image_name,
+    "image_name": image_name,
+    "model_name": model_name,
+    "severity": safety_lens_result.severity,
+    "visibility": metrics.get("visibility_level"),
+    "missed_total": metrics.get("missed_total"),
+    "recall": metrics.get("recall"),
+    "enhancement_failure": metrics.get("enhancement_failure_detected"),
+    "image_rgb": image_rgb,
+    "annotated_rgb": annotated,
+}
+
+gallery_button_cols = st.columns([1, 3])
+with gallery_button_cols[0]:
+    if st.button("Add to Failure-Case Gallery"):
+        st.session_state["failure_case_gallery"].append(gallery_entry)
+        st.success("Added current case to the in-app failure gallery.")
+
+st.subheader("Failure-Case Gallery")
+if not st.session_state["failure_case_gallery"]:
+    st.caption("No failure cases saved in this session yet.")
+else:
+    for index, case in enumerate(reversed(st.session_state["failure_case_gallery"]), start=1):
+        with st.expander(
+            f"{index}. {case['scenario']} | severity={case['severity']} | model={case['model_name']}",
+            expanded=(index == 1),
+        ):
+            case_left, case_right = st.columns(2)
+            with case_left:
+                st.caption("Original")
+                st.image(case["image_rgb"], width="stretch")
+            with case_right:
+                st.caption("Detected")
+                st.image(case["annotated_rgb"], width="stretch")
+            st.markdown(
+                "\n".join(
+                    [
+                        f"- Image: {case['image_name']}",
+                        f"- Visibility: {case['visibility']}",
+                        f"- Missed total: {case['missed_total']}",
+                        f"- Recall: {case['recall'] if case['recall'] is not None else 'N/A'}",
+                        f"- Enhancement failure: {case['enhancement_failure']}",
+                    ]
+                )
+            )
 
 save_button = st.button("Save Evaluation Snapshot")
 evaluation_id = None

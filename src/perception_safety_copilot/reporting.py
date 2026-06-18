@@ -78,6 +78,7 @@ def generate_markdown_report(
     result: EvaluationResult,
     confidence_threshold: float,
     low_confidence_threshold: float,
+    visibility_summary: dict | None = None,
 ) -> str:
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     metrics = [
@@ -113,6 +114,17 @@ def generate_markdown_report(
                 "- IoU threshold: 0.50 (not applied without bounding-box ground truth)",
                 "- mAP50: not available without bounding-box ground truth",
                 "- mAP50-95: not available without bounding-box ground truth",
+            ]
+        )
+    if visibility_summary:
+        metrics.extend(
+            [
+                f"- Visibility level: {visibility_summary.get('visibility_level', 'N/A')}",
+                f"- Visibility score: {visibility_summary.get('visibility_score', 'N/A')}",
+                f"- Brightness mean: {visibility_summary.get('brightness_mean', 'N/A')}",
+                f"- Contrast std: {visibility_summary.get('contrast_std', 'N/A')}",
+                f"- Sharpness (Laplacian variance): {visibility_summary.get('sharpness_laplacian_var', 'N/A')}",
+                f"- Enhancement enabled: {visibility_summary.get('image_enhancement_enabled', False)}",
             ]
         )
 

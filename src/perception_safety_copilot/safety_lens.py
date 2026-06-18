@@ -125,6 +125,83 @@ def _format_counts(counts: dict[str, int]) -> str:
     return ", ".join(f"{label}: {count}" for label, count in sorted(counts.items()))
 
 
+def _labels(counts: dict[str, int]) -> set[str]:
+    return {label for label, count in counts.items() if count > 0}
+
+
+def _merge_unique(items: list[str]) -> list[str]:
+    return list(dict.fromkeys(items))
+
+
+def _combined_issue_labels(input_data: SafetyLensInput) -> set[str]:
+    return _labels(input_data.low_confidence_expected_objects) | _labels(input_data.missed_objects)
+
+
+def _dynamic_sotif_recommendations(input_data: SafetyLensInput) -> list[str]:
+    issue_labels = _combined_issue_labels(input_data)
+    recs = ["Classify this as a potential triggering condition."]
+
+    if "night" in input_data.scenario_tags:
+        recs.append("Add more nighttime cases across different illumination levels and sensor exposure conditions.")
+    if "crosswalk" in input_data.scenario_tags:
+        recs.append("Create regression tests for pedestrian-crossing and crosswalk-entry scenarios.")
+    if "occlusion" in input_data.scenario_tags:
+        recs.append("Evaluate performance under partial occlusion, late emergence, and truncated object views.")
+    if "glare" in input_data.scenario_tags or "traffic light" in issue_labels:
+        recs.append("Stress-test the model under glare, reflective surfaces, and difficult traffic-signal visibility.")
+
+    if any(label in VULNERABLE_ROAD_USERS for label in _labels(input_data.missed_objects)):
+        recs.append("Review whether this scenario should trigger conservative behavior or ODD restrictions until coverage improves.")
+    elif any(label in VULNERABLE_ROAD_USERS for label in _labels(input_data.low_confidence_expected_objects)):
+        recs.append("Compare threshold settings to understand when vulnerable road users drop below the operating threshold.")
+
+    if issue_labels & IMPORTANT_OBJECTS:
+        recs.append("Slice validation by object size, distance, and scene geometry for safety-relevant road objects.")
+
+    recs.append("Evaluate performance across illumination, distance, pose, and occlusion variations.")
+    return _merge_unique(recs)
+
+
+def _dynamic_iso_8800_recommendations(input_data: SafetyLensInput) -> list[str]:
+    issue_labels = _combined_issue_labels(input_data)
+    recs = ["Track this scenario as an AI perception failure case."]
+
+    if any(label in VULNERABLE_ROAD_USERS for label in issue_labels):
+        recs.append("Review dataset coverage and class balance for vulnerable road users in this scenario family.")
+        recs.append("Analyze confidence calibration specifically for vulnerable road users and near-threshold detections.")
+
+    if "night" in input_data.scenario_tags:
+        recs.append("Audit training and validation coverage for nighttime and low-light scenes.")
+    if "rain" in input_data.scenario_tags or "fog" in input_data.scenario_tags:
+        recs.append("Check robustness under adverse visibility conditions and compare model behavior across weather slices.")
+    if "traffic light" in issue_labels:
+        recs.append("Review dataset coverage for traffic lights, signal visibility, and long-range small-object detection.")
+    if any(label in IMPORTANT_OBJECTS for label in issue_labels):
+        recs.append("Compare performance across model versions and threshold settings for safety-relevant object classes.")
+
+    recs.append("Include this case in future validation, monitoring, and model-change evaluation.")
+    return _merge_unique(recs)
+
+
+def _dynamic_iso_26262_recommendations(input_data: SafetyLensInput) -> list[str]:
+    issue_labels = _combined_issue_labels(input_data)
+    recs = ["Check whether safety requirements exist for handling missed or low-confidence perception outputs."]
+
+    if any(label in VULNERABLE_ROAD_USERS for label in _labels(input_data.missed_objects)):
+        recs.append("Assess whether missed vulnerable road users can contribute to hazardous braking, steering, or trajectory decisions.")
+        recs.append("Link this failure case to safety goals, technical safety requirements, and verification evidence for pedestrian protection.")
+    elif any(label in VULNERABLE_ROAD_USERS for label in _labels(input_data.low_confidence_expected_objects)):
+        recs.append("Verify whether downstream functions monitor perception confidence and enter degraded behavior when VRU evidence is weak.")
+
+    if "traffic light" in issue_labels:
+        recs.append("Review how downstream logic behaves when traffic-signal perception is missing, stale, or uncertain.")
+    if any(label in IMPORTANT_OBJECTS for label in issue_labels):
+        recs.append("Review whether fallback or degradation strategies are defined for uncertain perception of safety-relevant road objects.")
+
+    recs.append("Verify whether perception confidence is monitored by downstream functions.")
+    return _merge_unique(recs)
+
+
 def _build_input(
     raw_detections: list[Detection],
     display_detections: list[Detection],
@@ -216,6 +293,10 @@ def _build_observed_issues(input_data: SafetyLensInput, metrics: dict | None = N
     recall = None if metrics is None else metrics.get("recall")
     if recall is not None and recall < 0.5:
         issues.append("Recall is low for the selected scenario, indicating incomplete object coverage.")
+    if metrics and metrics.get("enhancement_failure_detected"):
+        issues.append(
+            "Preprocessing did not improve perception performance. This suggests the scenario requires model-level robustness improvement or adverse-weather training data."
+        )
 
     if not issues:
         issues.append("No expected-object miss or major low-confidence issue was found for this scene.")
@@ -253,13 +334,7 @@ def _infer_sotif(input_data: SafetyLensInput) -> StandardFinding:
             "This issue is most relevant to SOTIF because the perception model may be behaving as intended, "
             f"but its performance is insufficient under {condition_text}."
         ),
-        recommendations=[
-            "Classify this as a potential triggering condition.",
-            "Add more scenario-matched cases to the validation set.",
-            "Evaluate performance across illumination, distance, pose, and occlusion variations.",
-            "Compare model behavior across different confidence thresholds.",
-            "Create regression tests for similar vulnerable-road-user scenarios.",
-        ],
+        recommendations=_dynamic_sotif_recommendations(input_data),
         evidence_chain=[
             f"Expected objects: {_format_counts(input_data.expected_objects)}",
             f"Detected above display threshold: {_format_counts(input_data.detected_objects)}",
@@ -287,13 +362,7 @@ def _infer_iso_8800(input_data: SafetyLensInput) -> StandardFinding:
             "insufficient data coverage, weak confidence calibration, or limited robustness of the perception model "
             "for this scenario type."
         ),
-        recommendations=[
-            "Review dataset coverage for the affected object classes and scenario type.",
-            "Analyze confidence calibration for vulnerable road users and safety-relevant objects.",
-            "Compare performance across model versions and threshold settings.",
-            "Track this scenario as an AI perception failure case.",
-            "Include this case in future validation, monitoring, and model-change evaluation.",
-        ],
+        recommendations=_dynamic_iso_8800_recommendations(input_data),
         evidence_chain=[
             f"Low-confidence expected objects: {_format_counts(input_data.low_confidence_expected_objects)}",
             f"Missed expected objects: {_format_counts(input_data.missed_objects)}",
@@ -320,13 +389,7 @@ def _infer_iso_26262(input_data: SafetyLensInput) -> StandardFinding:
             "outputs for braking, warning, or trajectory planning. The main concern is not the AI limitation itself, "
             "but whether the system-level safety concept can detect, tolerate, or mitigate perception failure."
         ),
-        recommendations=[
-            "Check whether safety requirements exist for handling missed or low-confidence perception outputs.",
-            "Review whether fallback or degradation strategies are defined.",
-            "Verify whether perception confidence is monitored by downstream functions.",
-            "Assess whether missed vulnerable road users can contribute to hazardous behavior.",
-            "Link this failure case to relevant safety goals, technical safety requirements, or verification activities if applicable.",
-        ],
+        recommendations=_dynamic_iso_26262_recommendations(input_data),
         evidence_chain=[
             f"Detected above display threshold: {_format_counts(input_data.detected_objects)}",
             f"Low-confidence expected objects: {_format_counts(input_data.low_confidence_expected_objects)}",
@@ -420,6 +483,32 @@ def _format_metric(metric_name: str, metrics: dict | None) -> str:
     return str(value)
 
 
+def _robustness_conclusion(result: SafetyLensV2Result, metrics: dict | None) -> str:
+    if not metrics:
+        return "Robustness conclusion is unavailable because no evaluation metrics were provided."
+
+    if metrics.get("enhancement_failure_detected") and metrics.get("best_benchmark_model"):
+        return (
+            "Classical and learned preprocessing did not materially improve this case. "
+            f"The stronger model benchmark suggests `{metrics.get('best_benchmark_model')}` performs best on this disturbance slice, "
+            "so the next priority should be model-level robustness improvement and disturbance-rich training data."
+        )
+    if metrics.get("enhancement_failure_detected"):
+        return (
+            "Preprocessing did not improve this case, which suggests the current pipeline remains fragile under disturbance. "
+            "The next priority should be stronger detection models and adverse-weather or low-light training data."
+        )
+    if metrics.get("enhancement_best_variant") and metrics.get("enhancement_best_variant") != "Original":
+        return (
+            f"Preprocessing improved perception evidence for this scene, with `{metrics.get('enhancement_best_variant')}` "
+            "performing best. This indicates the disturbance is at least partially recoverable through front-end enhancement."
+        )
+    return (
+        "The current pipeline shows baseline robustness for this scene, but broader disturbance-slice benchmarking is still needed "
+        "before drawing strong deployment conclusions."
+    )
+
+
 def generate_safety_report(
     result: SafetyLensV2Result,
     scenario_name: str = "",
@@ -482,6 +571,9 @@ def generate_safety_report(
     lines.extend(
         [
             "",
+            "Robustness conclusion:",
+            _robustness_conclusion(result, metrics),
+            "",
             "Evidence summary:",
             f"- Scenario: {scenario_name or 'Unspecified scene'}",
             f"- Scenario tags: {', '.join(result.scenario_tags) if result.scenario_tags else 'None inferred'}",
@@ -495,6 +587,17 @@ def generate_safety_report(
             f"- Low-confidence threshold: {_format_metric('low_confidence_threshold', metrics)}",
             f"- mAP50: {_format_metric('map50', metrics)}",
             f"- mAP50-95: {_format_metric('map50_95', metrics)}",
+            (
+                f"- Enhancement comparison: no improvement over Original; best variant was "
+                f"{metrics.get('enhancement_best_variant', 'N/A')}."
+                if metrics and metrics.get("enhancement_failure_detected")
+                else (
+                    f"- Enhancement comparison: best variant was {metrics.get('enhancement_best_variant', 'N/A')} "
+                    f"with {metrics.get('enhancement_best_detections', 'N/A')} detections."
+                    if metrics and metrics.get("enhancement_best_variant")
+                    else "- Enhancement comparison: not run."
+                )
+            ),
             (
                 "- Ground-truth boxes: available for IoU / mAP analysis."
                 if metrics and metrics.get("ground_truth_boxes_available")
