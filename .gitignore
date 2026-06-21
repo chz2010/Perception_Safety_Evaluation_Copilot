@@ -5,8 +5,11 @@ __pycache__/
 data/*.sqlite3
 data/*.sqlite3-*
 *.pt
+*.pth
 runs/
 .DS_Store
+YOLO-format dataset/
+training/bdd100k_smoke_subset/
 
 outputs/*
 !outputs/.gitkeep

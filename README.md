@@ -30,6 +30,30 @@ This first version focuses on a small, runnable workflow:
 - Save each evaluation to local SQLite.
 - Generate a safety-oriented perception failure report.
 
+## Model Evaluation Summary
+
+The project now includes a fine-tuned `YOLO11s` disturbance-aware detector trained on a YOLO-formatted BDD100K driving-scene dataset.
+
+Headline results:
+
+- Precision: `~0.72`
+- Recall: `~0.46`
+- mAP50: `~0.51`
+- mAP50-95: `~0.28`
+- Best F1 confidence operating point: `~0.256`
+
+Engineering interpretation:
+
+- the model converged stably across 20 epochs
+- the dominant failure mode is missed detections rather than class confusion
+- vehicle and infrastructure classes perform better than vulnerable road user classes
+- pedestrians, riders, bicycles, and motorcycles remain the most safety-relevant weakness area
+- for safety analysis, threshold increases above `0.25` should be treated carefully because recall drops quickly
+
+This result directly reinforces the purpose of Project 3: the tool should not stop at generic mAP reporting. It should surface missed-object evidence, vulnerable-road-user risk, threshold sensitivity, and standards-oriented safety implications.
+
+Full write-up: [docs/yolo11s_finetuning_summary.md](/Users/chongharnzhin/Documents/Personal/AI/Bootcamp/00_W8-W9_Final_Project/Perception_Safety_Evaluation_Copilot/docs/yolo11s_finetuning_summary.md)
+
 ## Why This Complements Projects 1 and 2
 
 Project 1, `Autonomous_Driving_Safety_Analyst`, provides standards and safety context through an LLM/RAG and MCP-based knowledge service.
@@ -88,6 +112,40 @@ Run tests:
 ```bash
 pytest
 ```
+
+## YOLO Fine-Tuning Setup
+
+You now have a ready-to-use local training config for the complete YOLO-formatted
+BDD100K dataset:
+
+- Dataset YAML: [training/bdd100k_yolo_local.yaml](/Users/chongharnzhin/Documents/Personal/AI/Bootcamp/00_W8-W9_Final_Project/Perception_Safety_Evaluation_Copilot/training/bdd100k_yolo_local.yaml)
+- Training helper: [scripts/train_yolo_bdd100k.py](/Users/chongharnzhin/Documents/Personal/AI/Bootcamp/00_W8-W9_Final_Project/Perception_Safety_Evaluation_Copilot/scripts/train_yolo_bdd100k.py)
+
+Smoke test locally on your Mac first:
+
+```bash
+cd Perception_Safety_Evaluation_Copilot
+source .venv/bin/activate
+python scripts/train_yolo_bdd100k.py --model yolo11s.pt --epochs 1 --batch 8 --device mps --name smoke_yolo11s
+```
+
+If that works, step up to a longer run:
+
+```bash
+python scripts/train_yolo_bdd100k.py --model yolo11s.pt --epochs 20 --batch 16 --device mps --name yolo11s_disturbance_ft
+```
+
+For Colab or Linux GPU, switch `--device` to `0`.
+
+Training outputs will land under:
+
+```text
+runs/bdd100k_training/
+```
+
+The old raw BDD100K folder `archive (1)` is no longer required for this
+fine-tuning path. Keep it only if you still want to generate custom subsets from
+the original JSON metadata using `scripts/create_bdd100k_yolo_subset.py`.
 
 ## Ground Truth Input Format
 

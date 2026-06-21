@@ -70,6 +70,10 @@ BATCH_DETECTIONS_GLOB = "perception_yolo_results*.csv"
 BATCH_SUMMARY_GLOB = "perception_eval_summary*.csv"
 BATCH_REPORT_GLOB = "perception_failure_report*.md"
 INTERNAL_CANDIDATE_THRESHOLD = 0.25
+TRAINED_MODEL_CANDIDATES = {
+    "YOLO11s Disturbance Fine-Tuned": Path("runs/bdd100k_training/yolo11s_disturbance_ft/weights/best.pt"),
+    "YOLO11m Disturbance Fine-Tuned": Path("runs/bdd100k_training/yolo11m_disturbance_ft/weights/best.pt"),
+}
 
 
 st.set_page_config(
@@ -82,6 +86,22 @@ st.set_page_config(
 @st.cache_resource(show_spinner="Loading YOLO model...")
 def get_model(model_name: str):
     return load_yolo_model(model_name)
+
+
+def get_model_options() -> dict[str, str]:
+    options: dict[str, str] = {
+        "YOLOv8n": "yolov8n.pt",
+        "YOLOv8s": "yolov8s.pt",
+        "YOLO11n": "yolo11n.pt",
+        "YOLO11s": "yolo11s.pt",
+        "YOLO11m": "yolo11m.pt",
+        "YOLO11l": "yolo11l.pt",
+        "YOLO11x": "yolo11x.pt",
+    }
+    for label, path in TRAINED_MODEL_CANDIDATES.items():
+        if path.exists():
+            options[label] = str(path.resolve())
+    return options
 
 
 @st.cache_resource(show_spinner="Loading Zero-DCE learned enhancement model...")
@@ -231,24 +251,24 @@ def run_enhancement_comparison(
 
 
 def run_model_benchmark(
-    model_names: list[str],
+    model_specs: list[tuple[str, str]],
     image_rgb: np.ndarray,
     image_name: str,
     confidence_threshold: float,
 ) -> pd.DataFrame:
     rows = []
-    for benchmark_model_name in model_names:
+    for benchmark_model_label, benchmark_model_name in model_specs:
         detections = run_yolo_detection(
             get_model(benchmark_model_name),
             image_rgb,
             INTERNAL_CANDIDATE_THRESHOLD,
             image_id=image_name,
-            model_name=benchmark_model_name,
+            model_name=benchmark_model_label,
         )
         display_detections = [detection for detection in detections if detection.confidence >= confidence_threshold]
         rows.append(
             {
-                "model": benchmark_model_name,
+                "model": benchmark_model_label,
                 "detections": len(display_detections),
                 "raw_candidates": len(detections),
                 "labels": ", ".join(sorted({d.label for d in display_detections})) or "None",
@@ -614,11 +634,17 @@ if app_mode == "Batch Results Dashboard":
 
 with st.sidebar:
     st.header("Evaluation Setup")
-    model_name = st.selectbox(
+    model_options = get_model_options()
+    model_labels = list(model_options.keys())
+    default_model_index = model_labels.index("YOLO11s Disturbance Fine-Tuned") if "YOLO11s Disturbance Fine-Tuned" in model_options else 0
+    selected_model_label = st.selectbox(
         "YOLO model",
-        ["yolov8n.pt", "yolov8s.pt", "yolo11n.pt", "yolo11s.pt", "yolo11m.pt", "yolo11l.pt", "yolo11x.pt"],
-        index=0,
+        model_labels,
+        index=default_model_index,
     )
+    model_name = model_options[selected_model_label]
+    if Path(model_name).suffix == ".pt" and Path(model_name).exists():
+        st.caption(f"Using fine-tuned checkpoint: `{Path(model_name).name}`")
     confidence_threshold = st.slider("Detection confidence threshold", 0.05, 0.95, 0.25, 0.05)
     low_confidence_threshold = st.slider("Low-confidence safety threshold", 0.10, 0.95, 0.50, 0.05)
     st.divider()
@@ -658,10 +684,15 @@ with st.sidebar:
     )
     benchmark_model_names = st.multiselect(
         "Benchmark models",
-        ["yolo11s.pt", "yolo11m.pt", "yolo11l.pt", "yolo11x.pt"],
-        default=["yolo11s.pt", "yolo11m.pt", "yolo11l.pt"],
+        model_labels,
+        default=[
+            label
+            for label in ["YOLO11s", "YOLO11m", "YOLO11l", "YOLO11s Disturbance Fine-Tuned"]
+            if label in model_options
+        ],
         disabled=not run_model_benchmark_table,
     )
+    benchmark_model_specs = [(label, model_options[label]) for label in benchmark_model_names]
     expected_objects_text = st.text_area(
         "Expected objects",
         value="person: 1\ncar: 2\ntraffic light: 1",
@@ -935,7 +966,7 @@ model_benchmark_df = pd.DataFrame()
 if run_model_benchmark_table and benchmark_model_names:
     with st.spinner("Benchmarking larger YOLO models on this disturbance slice..."):
         model_benchmark_df = run_model_benchmark(
-            benchmark_model_names,
+            benchmark_model_specs,
             inference_image_rgb,
             image_name,
             confidence_threshold,
