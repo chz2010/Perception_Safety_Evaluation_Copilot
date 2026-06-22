@@ -76,7 +76,7 @@ Headline metrics:
 
 ### Confusion Matrix
 
-![Confusion Matrix](runs/bdd100k_training/yolo11s_disturbance_ft/confusion_matrix.png)
+![Confusion Matrix](assets/evaluation/confusion_matrix_yolo11s_ft.png)
 
 Engineering interpretation:
 
@@ -86,13 +86,13 @@ Engineering interpretation:
 
 ### Precision-Recall Curve
 
-![Precision Recall Curve](runs/bdd100k_training/yolo11s_disturbance_ft/BoxPR_curve.png)
+![Precision Recall Curve](assets/evaluation/precision_recall_curve_yolo11s_ft.png)
 
 The trained model achieves reasonable precision but only moderate recall, which is especially important for safety review because missed objects generally matter more than ordinary class confusion.
 
 ### Training Curves
 
-![Training Results](runs/bdd100k_training/yolo11s_disturbance_ft/results.png)
+![Training Results](assets/evaluation/training_results_yolo11s_ft.png)
 
 Training converged stably across 20 epochs, with decreasing box loss, classification loss, and DFL, and no strong sign of overfitting during the observed training window.
 
