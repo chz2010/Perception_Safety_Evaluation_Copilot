@@ -54,6 +54,18 @@ This result directly reinforces the purpose of Project 3: the tool should not st
 
 Full write-up: [docs/yolo11s_finetuning_summary.md](/Users/chongharnzhin/Documents/Personal/AI/Bootcamp/00_W8-W9_Final_Project/Perception_Safety_Evaluation_Copilot/docs/yolo11s_finetuning_summary.md)
 
+## Before vs Fine-Tuned Model
+
+Base `YOLO11s` result before disturbance-focused fine-tuning:
+
+![YOLO11s Before Fine-Tuning](assets/screenshots/yolo11s.png)
+
+Fine-tuned `YOLO11s Disturbance Fine-Tuned` result after BDD100K-based training:
+
+![YOLO11s After Fine-Tuning](assets/screenshots/yolo11s_fine_tuned.png)
+
+This comparison helps show the practical purpose of Project 3: not just running perception models, but evaluating whether fine-tuning improves safety-relevant detection behavior under disturbance conditions.
+
 ## Why This Complements Projects 1 and 2
 
 Project 1, `Autonomous_Driving_Safety_Analyst`, provides standards and safety context through an LLM/RAG and MCP-based knowledge service.
