@@ -67,6 +67,8 @@ Safety Lens v2 translates raw perception behavior into structured safety-oriente
 
 ### Model Comparison
 
+The project keeps the earlier YOLO11s experiment as a comparison point. This is useful because it shows the evaluation path from a smaller model baseline to a stronger fine-tuned YOLO11m checkpoint.
+
 Base `YOLO11s` before fine-tuning:
 
 ![YOLO11s Before Fine-Tuning](assets/screenshots/yolo11s.png)
@@ -74,6 +76,8 @@ Base `YOLO11s` before fine-tuning:
 Fine-tuned `YOLO11s Disturbance Fine-Tuned` after BDD100K-based training:
 
 ![YOLO11s After Fine-Tuning](assets/screenshots/yolo11s_fine_tuned.png)
+
+The current Streamlit default is `YOLO11m BDD100K Stage 1 (Fine-Tuned)`, while YOLO11s remains available as an earlier comparison model when its local checkpoint exists.
 
 ### Failure Case Analysis
 
@@ -83,19 +87,34 @@ This view emphasizes the portfolio goal of Project 3: not just detecting objects
 
 ## Evaluation Results
 
-The project now includes a fine-tuned `YOLO11s` disturbance-aware detector trained on a YOLO-formatted BDD100K driving-scene dataset.
+The app currently defaults to `YOLO11m BDD100K Stage 1 (Fine-Tuned)`, a YOLO11m checkpoint trained on a YOLO-formatted BDD100K driving-scene dataset. The local checkpoint used by Streamlit is:
 
-Headline metrics:
+```text
+perception_training_outputs/yolo11m_bdd100k_stage1/weights/best.pt
+```
 
-- Precision: `~0.72`
-- Recall: `~0.46`
-- mAP50: `~0.51`
-- mAP50-95: `~0.28`
-- Best F1 confidence operating point: `~0.256`
+Headline validation metrics from the latest 20-epoch Stage 1 run:
+
+- Precision: `0.738`
+- Recall: `0.508`
+- mAP50: `0.558`
+- mAP50-95: `0.318`
+- Training output folder: `perception_training_outputs/yolo11m_bdd100k_stage1/`
+
+The model selector also includes standard pretrained baselines such as `YOLOv8n`, `YOLOv8s`, `YOLO11n`, `YOLO11s`, `YOLO11m`, `YOLO11l`, and `YOLO11x`. Fine-tuned checkpoints only appear when their local `weights/best.pt` file exists in the expected project path.
+
+### Fine-Tuned Model Comparison
+
+| Model | Role | Precision | Recall | mAP50 | mAP50-95 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `YOLO11s Disturbance Fine-Tuned` | earlier lightweight fine-tuned model | `0.720` | `0.455` | `0.506` | `0.283` |
+| `YOLO11m BDD100K Stage 1 (Fine-Tuned)` | current default model | `0.740` | `0.507` | `0.558` | `0.318` |
+
+Interpretation: YOLO11m is the better current default because it improves both recall and mAP, while YOLO11s remains valuable as a smaller-model comparison and portfolio evidence of iterative model evaluation.
 
 ### Confusion Matrix
 
-![Confusion Matrix](assets/evaluation/confusion_matrix_yolo11s_ft.png)
+![Confusion Matrix](perception_training_outputs/yolo11m_bdd100k_stage1/confusion_matrix.png)
 
 Engineering interpretation:
 
@@ -105,25 +124,25 @@ Engineering interpretation:
 
 ### Precision-Recall Curve
 
-![Precision Recall Curve](assets/evaluation/precision_recall_curve_yolo11s_ft.png)
+![Precision Recall Curve](perception_training_outputs/yolo11m_bdd100k_stage1/BoxPR_curve.png)
 
 The trained model achieves reasonable precision but only moderate recall, which is especially important for safety review because missed objects generally matter more than ordinary class confusion.
 
 ### Training Curves
 
-![Training Results](assets/evaluation/training_results_yolo11s_ft.png)
+![Training Results](perception_training_outputs/yolo11m_bdd100k_stage1/results.png)
 
 Training converged stably across 20 epochs, with decreasing box loss, classification loss, and DFL, and no strong sign of overfitting during the observed training window.
 
 ### Key Findings
 
 - the model converged normally during fine-tuning
-- the default operating threshold around `0.25` is close to the best F1 tradeoff
+- the default operating threshold around `0.25` remains a practical starting point for review
 - increasing confidence threshold improves precision but reduces recall quickly
 - false negatives are the most important perception risk pattern
 - pedestrians, riders, bicycles, and motorcycles remain the most safety-critical weak classes
 
-Full engineering write-up: [docs/yolo11s_finetuning_summary.md](/Users/chongharnzhin/Documents/Personal/AI/Bootcamp/00_W8-W9_Final_Project/Perception_Safety_Evaluation_Copilot/docs/yolo11s_finetuning_summary.md)
+Earlier YOLO11s fine-tuning notes are available in [docs/yolo11s_finetuning_summary.md](docs/yolo11s_finetuning_summary.md).
 
 ## Future Integration
 
@@ -173,8 +192,8 @@ pytest
 
 Ready-to-use local training assets:
 
-- dataset YAML: [training/bdd100k_yolo_local.yaml](/Users/chongharnzhin/Documents/Personal/AI/Bootcamp/00_W8-W9_Final_Project/Perception_Safety_Evaluation_Copilot/training/bdd100k_yolo_local.yaml)
-- training helper: [scripts/train_yolo_bdd100k.py](/Users/chongharnzhin/Documents/Personal/AI/Bootcamp/00_W8-W9_Final_Project/Perception_Safety_Evaluation_Copilot/scripts/train_yolo_bdd100k.py)
+- dataset YAML: [training/bdd100k_yolo_local.yaml](training/bdd100k_yolo_local.yaml)
+- training helper: [scripts/train_yolo_bdd100k.py](scripts/train_yolo_bdd100k.py)
 
 Smoke test locally:
 
@@ -190,6 +209,12 @@ Fine-tune `YOLO11s`:
 python scripts/train_yolo_bdd100k.py --model yolo11s.pt --epochs 20 --batch 16 --device mps --name yolo11s_disturbance_ft
 ```
 
+Fine-tune `YOLO11m` for the current Stage 1 model:
+
+```bash
+python scripts/train_yolo_bdd100k.py --model yolo11m.pt --epochs 20 --batch 16 --device 0 --name yolo11m_bdd100k_stage1
+```
+
 For Colab or Linux GPU, switch `--device` to `0`.
 
 Training outputs are saved under:
@@ -197,6 +222,20 @@ Training outputs are saved under:
 ```text
 runs/bdd100k_training/
 ```
+
+Colab training outputs can also be copied into:
+
+```text
+perception_training_outputs/<run_name>/
+```
+
+For the current default model, the app expects:
+
+```text
+perception_training_outputs/yolo11m_bdd100k_stage1/weights/best.pt
+```
+
+Only the deployment checkpoint `best.pt` is needed by the app. Intermediate `epoch*.pt` files are intentionally not required and are usually too large for a normal GitHub push.
 
 The old raw BDD100K folder `archive (1)` is no longer required for this fine-tuning path unless you want to rebuild custom subsets from raw JSON metadata.
 
