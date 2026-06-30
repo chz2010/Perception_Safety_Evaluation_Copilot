@@ -47,6 +47,7 @@ class StandardFinding:
 @dataclass(frozen=True)
 class SafetyLensV2Result:
     severity: str
+    evidence_sufficiency: str
     expected_objects: dict[str, int]
     detected_objects: dict[str, int]
     low_confidence_expected_objects: dict[str, int]
@@ -57,6 +58,8 @@ class SafetyLensV2Result:
     standard_specific_findings: list[StandardFinding]
     standard_specific_recommendations: list[str]
     evidence_chain: list[str]
+    assessment_limitations: list[str]
+    operating_recommendation: str
 
 
 def normalize_label(label: str) -> str:
@@ -304,20 +307,36 @@ def _build_observed_issues(input_data: SafetyLensInput, metrics: dict | None = N
     return issues
 
 
-def _infer_sotif(input_data: SafetyLensInput) -> StandardFinding:
-    conditions = []
-    if "night" in input_data.scenario_tags:
-        conditions.append("nighttime lighting")
-    if "crosswalk" in input_data.scenario_tags:
-        conditions.append("crosswalk geometry")
-    if "occlusion" in input_data.scenario_tags:
-        conditions.append("partial occlusion")
-    if "glare" in input_data.scenario_tags:
-        conditions.append("glare")
-    if "fog" in input_data.scenario_tags or "rain" in input_data.scenario_tags:
-        conditions.append("low visibility")
+def _scenario_condition_text(input_data: SafetyLensInput) -> str:
+    labels = {
+        "night": "nighttime illumination",
+        "rain": "rain and reduced visibility",
+        "fog": "fog or haze",
+        "glare": "glare",
+        "crosswalk": "crosswalk geometry",
+        "occlusion": "partial occlusion",
+        "intersection": "intersection complexity",
+        "urban": "urban scene complexity",
+    }
+    conditions = [label for tag, label in labels.items() if tag in input_data.scenario_tags]
+    return ", ".join(conditions) if conditions else "the supplied operating scene"
 
-    condition_text = ", ".join(conditions) if conditions else "specific triggering conditions"
+
+def _failure_description(input_data: SafetyLensInput) -> str:
+    parts: list[str] = []
+    if input_data.missed_objects:
+        parts.append(f"complete misses ({_format_counts(input_data.missed_objects)})")
+    if input_data.low_confidence_expected_objects:
+        parts.append(
+            "threshold-sensitive candidates "
+            f"({_format_counts(input_data.low_confidence_expected_objects)})"
+        )
+    return " and ".join(parts) if parts else "no expected-object failure"
+
+
+def _infer_sotif(input_data: SafetyLensInput) -> StandardFinding:
+    condition_text = _scenario_condition_text(input_data)
+    failure_text = _failure_description(input_data)
 
     severity = "LOW"
     if any(label in VULNERABLE_ROAD_USERS for label in input_data.missed_objects):
@@ -331,8 +350,10 @@ def _infer_sotif(input_data: SafetyLensInput) -> StandardFinding:
         standard="ISO 21448 / SOTIF",
         severity=severity,
         interpretation=(
-            "This issue is most relevant to SOTIF because the perception model may be behaving as intended, "
-            f"but its performance is insufficient under {condition_text}."
+            f"The observed {failure_text} under {condition_text} is consistent with a potential perception "
+            "case where perception performance is insufficient. The evidence supports investigating these "
+            "conditions as possible SOTIF "
+            "triggering conditions; it does not by itself establish the root cause."
         ),
         recommendations=_dynamic_sotif_recommendations(input_data),
         evidence_chain=[
@@ -358,9 +379,10 @@ def _infer_iso_8800(input_data: SafetyLensInput) -> StandardFinding:
         standard="ISO 8800",
         severity=severity,
         interpretation=(
-            "This issue is relevant to AI safety because low-confidence and missed detections may indicate "
-            "insufficient data coverage, weak confidence calibration, or limited robustness of the perception model "
-            "for this scenario type."
+            f"The AI-performance evidence contains {_failure_description(input_data)} under "
+            f"{_scenario_condition_text(input_data)}. This creates concrete questions about scenario coverage, "
+            "class balance, confidence calibration, and robustness. Dataset or calibration weakness remains a "
+            "hypothesis until slice-level evidence is reviewed."
         ),
         recommendations=_dynamic_iso_8800_recommendations(input_data),
         evidence_chain=[
@@ -385,9 +407,10 @@ def _infer_iso_26262(input_data: SafetyLensInput) -> StandardFinding:
         standard="ISO 26262",
         severity=severity,
         interpretation=(
-            "This issue may become relevant to functional safety if downstream safety functions depend on perception "
-            "outputs for braking, warning, or trajectory planning. The main concern is not the AI limitation itself, "
-            "but whether the system-level safety concept can detect, tolerate, or mitigate perception failure."
+            f"The perception evidence shows {_failure_description(input_data)}. ISO 26262 relevance depends on the "
+            "vehicle function that consumes this output and whether the failure can contribute to hazardous behavior. "
+            "A single image cannot establish Exposure, Controllability, or ASIL; it can identify a failure case that "
+            "must be traced to safety goals, monitoring, fallback, and verification evidence."
         ),
         recommendations=_dynamic_iso_26262_recommendations(input_data),
         evidence_chain=[
@@ -396,6 +419,66 @@ def _infer_iso_26262(input_data: SafetyLensInput) -> StandardFinding:
             f"Missed expected objects: {_format_counts(input_data.missed_objects)}",
             "Functional safety concern: downstream safety behavior should not assume missing or weak perception is safe.",
         ],
+    )
+
+
+def _assessment_limitations(input_data: SafetyLensInput, metrics: dict | None) -> list[str]:
+    limitations: list[str] = []
+    if not input_data.expected_objects:
+        limitations.append(
+            "No expected-object counts were supplied, so missed-object severity and single-image recall cannot be established."
+        )
+    if not input_data.scenario_tags:
+        limitations.append(
+            "No verified scenario tags were supplied, so condition-specific conclusions are limited."
+        )
+    if not metrics or not metrics.get("ground_truth_boxes_available"):
+        limitations.append(
+            "Ground-truth boxes are unavailable, so localization quality and single-image IoU/mAP cannot be verified."
+        )
+    if metrics and metrics.get("map50") is None:
+        limitations.append(
+            "mAP is a dataset-level metric and is not available as evidence for this individual image."
+        )
+    return limitations
+
+
+def _evidence_sufficiency(input_data: SafetyLensInput, metrics: dict | None) -> str:
+    if not input_data.expected_objects:
+        return "LIMITED"
+    if not metrics or not metrics.get("ground_truth_boxes_available"):
+        return "MODERATE"
+    return "STRONG"
+
+
+def _operating_recommendation(
+    severity: str,
+    input_data: SafetyLensInput,
+    evidence_sufficiency: str,
+) -> str:
+    if evidence_sufficiency == "LIMITED":
+        return (
+            "Do not interpret the LOW severity as proof of complete perception. Add reviewed expected objects or "
+            "ground-truth annotations before using this image as pass/fail evidence."
+        )
+    if severity == "CRITICAL":
+        return (
+            "Treat this image as a priority failure case. Block acceptance of this scenario configuration until the "
+            "complete miss is reproduced, reviewed, and covered by regression testing."
+        )
+    if severity == "HIGH":
+        return (
+            "Treat this image as safety-relevant threshold sensitivity. Compare model and threshold settings, then "
+            "verify downstream handling of weak vulnerable-road-user evidence."
+        )
+    if severity == "MEDIUM":
+        return (
+            "Investigate the affected classes before accepting robustness for this scenario family and retain the "
+            "image as a regression case."
+        )
+    return (
+        "No major expected-object failure was found at the selected threshold. Retain the case for regression "
+        "monitoring; this is not a release conclusion by itself."
     )
 
 
@@ -423,6 +506,7 @@ def evaluate_safety_lens(
         _infer_iso_26262(input_data),
     ]
     severity = _highest_severity(findings)
+    evidence_sufficiency = _evidence_sufficiency(input_data, metrics)
     primary_safety_concern = _build_primary_concern(input_data)
     observed_issues = _build_observed_issues(input_data, metrics=metrics)
 
@@ -438,6 +522,7 @@ def evaluate_safety_lens(
 
     return SafetyLensV2Result(
         severity=severity,
+        evidence_sufficiency=evidence_sufficiency,
         expected_objects=input_data.expected_objects,
         detected_objects=input_data.detected_objects,
         low_confidence_expected_objects=input_data.low_confidence_expected_objects,
@@ -448,27 +533,41 @@ def evaluate_safety_lens(
         standard_specific_findings=findings,
         standard_specific_recommendations=standard_specific_recommendations,
         evidence_chain=evidence_chain,
+        assessment_limitations=_assessment_limitations(input_data, metrics),
+        operating_recommendation=_operating_recommendation(
+            severity,
+            input_data,
+            evidence_sufficiency,
+        ),
     )
 
 
 def _recommended_follow_up_tests(result: SafetyLensV2Result) -> list[str]:
     tests: list[str] = []
     if "night" in result.scenario_tags:
-        tests.append("Nighttime pedestrian crossing with different pedestrian distances.")
+        tests.append("Repeat the scene across measured illumination levels and object distances.")
+    if "rain" in result.scenario_tags:
+        tests.append("Repeat the scene across rain intensity, windshield contamination, and spray levels.")
+    if "fog" in result.scenario_tags:
+        tests.append("Evaluate the affected classes across controlled visibility ranges.")
+    if "glare" in result.scenario_tags:
+        tests.append("Sweep glare source position and intensity while preserving the same scene geometry.")
     if "occlusion" in result.scenario_tags or any(
         label in VULNERABLE_ROAD_USERS for label in result.low_confidence_expected_objects
     ):
-        tests.append("Pedestrian partially occluded by vehicle or street furniture.")
+        tests.append("Vary occlusion ratio and emergence timing for the affected vulnerable road users.")
     if any(label in VULNERABLE_ROAD_USERS for label in result.expected_objects):
-        tests.append("Multiple pedestrians crossing simultaneously.")
+        tests.append("Vary vulnerable-road-user count, pose, scale, and lateral position.")
     if "traffic light" in result.expected_objects:
-        tests.append("Traffic light detection under glare or low-light conditions.")
-    tests.extend(
-        [
-            "Threshold sensitivity test from 0.25 to 0.90.",
-            "Model comparison test between YOLOv8n, YOLO11n, YOLO11s, and larger variants.",
-        ]
-    )
+        tests.append("Vary traffic-light distance, signal state, glare, and partial obstruction.")
+    if result.low_confidence_expected_objects:
+        affected = ", ".join(sorted(result.low_confidence_expected_objects))
+        tests.append(f"Run a threshold sweep for the near-threshold classes: {affected}.")
+    if result.missed_expected_objects:
+        affected = ", ".join(sorted(result.missed_expected_objects))
+        tests.append(f"Compare model variants on the completely missed classes: {affected}.")
+    if not tests:
+        tests.append("Retain this scene in the regression set and monitor confidence drift across model changes.")
     return list(dict.fromkeys(tests))
 
 
@@ -520,6 +619,7 @@ def generate_safety_report(
     lines = [
         "## Safety Lens Assessment",
         f"Severity: {result.severity}",
+        f"Evidence sufficiency: {result.evidence_sufficiency}",
         "",
         "Primary safety concern:",
         result.primary_safety_concern,
@@ -529,6 +629,20 @@ def generate_safety_report(
 
     for index, issue in enumerate(result.observed_perception_issues, start=1):
         lines.append(f"{index}. {issue}")
+
+    lines.extend(
+        [
+            "",
+            "Operating recommendation:",
+            result.operating_recommendation,
+            "",
+            "Assessment limitations:",
+        ]
+    )
+    if result.assessment_limitations:
+        lines.extend(f"- {item}" for item in result.assessment_limitations)
+    else:
+        lines.append("- No major evidence limitation was identified for this evaluation.")
 
     lines.extend(
         [

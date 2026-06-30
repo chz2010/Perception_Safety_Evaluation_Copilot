@@ -15,18 +15,23 @@ from .project1_bridge import (
 
 @dataclass(frozen=True)
 class RetrievedContext:
+    evidence_id: str
     title: str
     source_path: Path
     layer: str
     score: int
     matched_terms: list[str]
     excerpt: str
+    retrieval_reason: str
 
 
 @dataclass(frozen=True)
 class RetrievalBundle:
     query_terms: list[str]
+    query_plan: dict[str, list[str]]
+    grounding_notes: list[str]
     similar_scenarios: list[RetrievedContext]
+    failure_mechanisms: list[RetrievedContext]
     safety_context: list[RetrievedContext]
     standards_guidance: list[RetrievedContext]
 
@@ -60,6 +65,22 @@ def _extract_excerpt(text: str, matched_terms: list[str], radius: int = 260) -> 
     return prefix + text[start:end].strip() + suffix
 
 
+def _passages(text: str) -> list[str]:
+    passages: list[str] = []
+    current_heading = ""
+    for block in re.split(r"\n\s*\n", text):
+        cleaned = block.strip()
+        if not cleaned:
+            continue
+        if cleaned.startswith("#"):
+            current_heading = cleaned
+            continue
+        passage = f"{current_heading}\n{cleaned}".strip()
+        if len(passage) >= 60:
+            passages.append(passage)
+    return passages or [text]
+
+
 def _score_document(text: str, title: str, terms: list[str]) -> tuple[int, list[str]]:
     haystack = f"{_normalize(title)}\n{_normalize(text)}"
     score = 0
@@ -71,6 +92,19 @@ def _score_document(text: str, title: str, terms: list[str]) -> tuple[int, list[
             if term in _normalize(title):
                 score += 3
     return score, matched_terms
+
+
+def _best_passage(text: str, title: str, terms: list[str]) -> tuple[int, list[str], str]:
+    best_score = 0
+    best_terms: list[str] = []
+    best_text = text
+    for passage in _passages(text):
+        score, matched_terms = _score_document(passage, title, terms)
+        if score > best_score:
+            best_score = score
+            best_terms = matched_terms
+            best_text = passage
+    return best_score, best_terms, _extract_excerpt(best_text, best_terms)
 
 
 def _candidate_documents() -> list[tuple[str, str, Path]]:
@@ -86,30 +120,134 @@ def _candidate_documents() -> list[tuple[str, str, Path]]:
     ]
 
 
+def build_query_plan(
+    scenario_name: str,
+    scenario_tags: list[str],
+    detected_objects: dict[str, int],
+    expected_objects: dict[str, int],
+    low_confidence_expected_objects: dict[str, int],
+    missed_expected_objects: dict[str, int],
+) -> dict[str, list[str]]:
+    scenario_terms = _tokenize(scenario_name) + _tokenize(" ".join(scenario_tags))
+    failure_terms = (
+        _tokenize(" ".join(low_confidence_expected_objects.keys()))
+        + _tokenize(" ".join(missed_expected_objects.keys()))
+    )
+    observed_object_terms = _tokenize(" ".join(detected_objects.keys()))
+    expected_object_terms = _tokenize(" ".join(expected_objects.keys()))
+
+    if missed_expected_objects:
+        failure_terms.extend(["missed", "detection", "false negative", "insufficient performance"])
+    if low_confidence_expected_objects:
+        failure_terms.extend(["confidence", "uncertainty", "threshold", "calibration"])
+    if any(
+        label in {"person", "pedestrian", "cyclist", "bicycle", "motorcycle"}
+        for label in set(missed_expected_objects) | set(low_confidence_expected_objects)
+    ):
+        failure_terms.extend(["vru", "pedestrian", "vulnerable road user", "occlusion"])
+    if "night" in scenario_tags:
+        scenario_terms.extend(["night", "low light", "illumination"])
+    if "crosswalk" in scenario_tags:
+        scenario_terms.extend(["crossing", "urban", "pedestrian"])
+    if "rain" in scenario_tags or "fog" in scenario_tags:
+        scenario_terms.extend(["weather", "visibility", "environmental condition"])
+    if "traffic_light" in scenario_tags or "traffic light" in expected_objects:
+        scenario_terms.extend(["traffic", "signal"])
+
+    shared_failure_terms = list(
+        dict.fromkeys(failure_terms + scenario_terms + observed_object_terms + expected_object_terms)
+    )
+    return {
+        "scenario_similarity": list(dict.fromkeys(term for term in scenario_terms if term)),
+        "failure_mechanism": list(dict.fromkeys(term for term in shared_failure_terms if term)),
+        "sotif": list(
+            dict.fromkeys(
+                shared_failure_terms
+                + ["triggering condition", "functional insufficiency", "scenario coverage", "sotif"]
+            )
+        ),
+        "iso_8800": list(
+            dict.fromkeys(
+                shared_failure_terms
+                + ["data quality", "dataset coverage", "robustness", "model performance", "ai safety"]
+            )
+        ),
+        "iso_26262": list(
+            dict.fromkeys(
+                shared_failure_terms
+                + ["hazard", "safety goal", "fallback", "degradation", "controllability", "asil"]
+            )
+        ),
+    }
+
+
 def build_query_terms(
     scenario_name: str,
     scenario_tags: list[str],
+    detected_objects: dict[str, int],
     expected_objects: dict[str, int],
     low_confidence_expected_objects: dict[str, int],
     missed_expected_objects: dict[str, int],
 ) -> list[str]:
-    terms: list[str] = []
-    terms.extend(_tokenize(scenario_name))
-    terms.extend(_tokenize(" ".join(scenario_tags)))
-    terms.extend(_tokenize(" ".join(expected_objects.keys())))
-    terms.extend(_tokenize(" ".join(low_confidence_expected_objects.keys())))
-    terms.extend(_tokenize(" ".join(missed_expected_objects.keys())))
+    plan = build_query_plan(
+        scenario_name,
+        scenario_tags,
+        detected_objects,
+        expected_objects,
+        low_confidence_expected_objects,
+        missed_expected_objects,
+    )
+    return list(dict.fromkeys(term for terms in plan.values() for term in terms))
 
-    if any(label in {"person", "pedestrian", "cyclist", "bicycle", "motorcycle"} for label in missed_expected_objects):
-        terms.extend(["vru", "pedestrian", "occlusion"])
-    if "night" in scenario_tags:
-        terms.extend(["night", "glare"])
-    if "crosswalk" in scenario_tags:
-        terms.extend(["crossing", "urban"])
-    if "traffic_light" in scenario_tags or "traffic light" in expected_objects:
-        terms.extend(["traffic", "signal"])
 
-    return list(dict.fromkeys(term for term in terms if term))
+def _retrieve(
+    documents: list[tuple[str, str, Path]],
+    terms: list[str],
+    allowed_layers: set[str],
+    evidence_prefix: str,
+    reason: str,
+    top_k: int,
+    include_zero_score: bool = False,
+    min_score: int = 1,
+    min_matched_terms: int = 1,
+) -> list[RetrievedContext]:
+    matches: list[RetrievedContext] = []
+    for layer, title, path in documents:
+        if layer not in allowed_layers or not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        score, matched_terms, excerpt = _best_passage(text, title, terms)
+        if not include_zero_score and (
+            score < min_score or len(set(matched_terms)) < min_matched_terms
+        ):
+            continue
+        matches.append(
+            RetrievedContext(
+                evidence_id="",
+                title=title,
+                source_path=path,
+                layer=layer,
+                score=score,
+                matched_terms=matched_terms,
+                excerpt=excerpt,
+                retrieval_reason=reason,
+            )
+        )
+
+    ranked = sorted(matches, key=lambda match: match.score, reverse=True)[:top_k]
+    return [
+        RetrievedContext(
+            evidence_id=f"{evidence_prefix}-{index}",
+            title=item.title,
+            source_path=item.source_path,
+            layer=item.layer,
+            score=item.score,
+            matched_terms=item.matched_terms,
+            excerpt=item.excerpt,
+            retrieval_reason=item.retrieval_reason,
+        )
+        for index, item in enumerate(ranked, start=1)
+    ]
 
 
 def retrieve_project1_evidence(
@@ -118,54 +256,128 @@ def retrieve_project1_evidence(
     expected_objects: dict[str, int],
     low_confidence_expected_objects: dict[str, int],
     missed_expected_objects: dict[str, int],
+    detected_objects: dict[str, int] | None = None,
     top_k_similar: int = 3,
 ) -> RetrievalBundle:
-    query_terms = build_query_terms(
+    query_plan = build_query_plan(
         scenario_name,
         scenario_tags,
+        detected_objects or {},
         expected_objects,
         low_confidence_expected_objects,
         missed_expected_objects,
     )
+    documents = _candidate_documents()
+    camera_documents = [item for item in documents if "LiDAR" not in item[1]]
+    scenario_term_set = set(query_plan["scenario_similarity"] + query_plan["failure_mechanism"])
+    relevant_scenario_documents: list[tuple[str, str, Path]] = []
+    if scenario_term_set & {
+        "person",
+        "pedestrian",
+        "cyclist",
+        "bicycle",
+        "motorcycle",
+        "vru",
+        "crosswalk",
+        "crossing",
+    }:
+        relevant_scenario_documents.extend(
+            item for item in camera_documents if item[1] == "AEB Pedestrian Safety Case"
+        )
+    if scenario_term_set & {"lane", "marking", "steering", "road edge", "lane keeping"}:
+        relevant_scenario_documents.extend(
+            item for item in camera_documents if item[1] == "Lane Maintaining Perception Safety Case"
+        )
+    relevant_scenario_documents = list(dict.fromkeys(relevant_scenario_documents))
+    relevant_failure_documents = relevant_scenario_documents + [
+        item for item in camera_documents if item[0] == "safety_context"
+    ]
 
-    matches: list[RetrievedContext] = []
-    for layer, title, path in _candidate_documents():
-        if not path.exists():
+    grounding_notes: list[str] = []
+    if query_plan["scenario_similarity"] and relevant_scenario_documents:
+        similar_scenarios = _retrieve(
+            relevant_scenario_documents,
+            query_plan["scenario_similarity"],
+            {"similar_scenarios"},
+            "SCN",
+            "Matched explicit scene description and operating-condition terms.",
+            top_k_similar,
+            min_score=12,
+            min_matched_terms=2,
+        )
+        if not similar_scenarios:
+            grounding_notes.append(
+                "No Project 1 scenario met the minimum relevance threshold; no scenario analogy was forced."
+            )
+    elif not query_plan["scenario_similarity"]:
+        similar_scenarios = []
+        grounding_notes.append(
+            "No explicit scene description or inferred scenario tag was available, so scenario retrieval was skipped."
+        )
+    else:
+        similar_scenarios = []
+        grounding_notes.append(
+            "Project 1 has no scenario example for the grounded scene type, so no analogy was forced."
+        )
+
+    has_failure_evidence = bool(low_confidence_expected_objects or missed_expected_objects)
+    failure_mechanisms = _retrieve(
+        relevant_failure_documents,
+        query_plan["failure_mechanism"],
+        {"similar_scenarios", "safety_context"},
+        "FAIL",
+        "Matched the observed missed-object or low-confidence failure pattern.",
+        3,
+        min_score=12,
+        min_matched_terms=2,
+    ) if has_failure_evidence else []
+    safety_context = _retrieve(
+        documents,
+        query_plan["failure_mechanism"],
+        {"safety_context"},
+        "CTX",
+        "Matched dataset limitations, coverage, or perception-evaluation context.",
+        1,
+        min_score=6,
+        min_matched_terms=2,
+    ) if has_failure_evidence else []
+    if not has_failure_evidence:
+        grounding_notes.append(
+            "No expected-object miss or low-confidence expected object was present, so failure retrieval was skipped."
+        )
+
+    standard_specs = [
+        ("ISO 21448 / SOTIF", "sotif", "STD-SOTIF"),
+        ("ISO 8800", "iso_8800", "STD-8800"),
+        ("ISO 26262", "iso_26262", "STD-26262"),
+    ]
+    standards_guidance: list[RetrievedContext] = []
+    for title_fragment, query_key, evidence_prefix in standard_specs:
+        if not has_failure_evidence:
             continue
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        score, matched_terms = _score_document(text, title, query_terms)
-        if score == 0 and layer != "standards_guidance":
-            continue
-        matches.append(
-            RetrievedContext(
-                title=title,
-                source_path=path,
-                layer=layer,
-                score=score,
-                matched_terms=matched_terms,
-                excerpt=_extract_excerpt(text, matched_terms),
+        standard_documents = [
+            item for item in documents if item[0] == "standards_guidance" and title_fragment in item[1]
+        ]
+        standards_guidance.extend(
+            _retrieve(
+                standard_documents,
+                query_plan[query_key],
+                {"standards_guidance"},
+                evidence_prefix,
+                f"Retrieved specifically for {title_fragment} interpretation of this failure.",
+                1,
+                include_zero_score=True,
             )
         )
 
-    similar_scenarios = sorted(
-        [match for match in matches if match.layer == "similar_scenarios"],
-        key=lambda match: match.score,
-        reverse=True,
-    )[:top_k_similar]
-    safety_context = sorted(
-        [match for match in matches if match.layer == "safety_context"],
-        key=lambda match: match.score,
-        reverse=True,
-    )[:1]
-    standards_guidance = sorted(
-        [match for match in matches if match.layer == "standards_guidance"],
-        key=lambda match: match.score,
-        reverse=True,
-    )[:3]
+    query_terms = list(dict.fromkeys(term for terms in query_plan.values() for term in terms))
 
     return RetrievalBundle(
         query_terms=query_terms,
+        query_plan=query_plan,
+        grounding_notes=grounding_notes,
         similar_scenarios=similar_scenarios,
+        failure_mechanisms=failure_mechanisms,
         safety_context=safety_context,
         standards_guidance=standards_guidance,
     )
@@ -173,12 +385,19 @@ def retrieve_project1_evidence(
 
 def render_retrieval_markdown(bundle: RetrievalBundle) -> str:
     lines = [
-        "### Scenario Retrieval Layer",
+        "### Supporting Safety Evidence",
         "",
-        f"- Query terms: {', '.join(bundle.query_terms) if bundle.query_terms else 'None'}",
+        "Independent retrieval is used so scene similarity, failure mechanisms, and standards guidance do not compete in one search.",
+    ]
+    if bundle.grounding_notes:
+        lines.extend(["", "#### Grounding Status"])
+        lines.extend(f"- {note}" for note in bundle.grounding_notes)
+    lines.extend(
+        [
         "",
         "#### Similar Known Scenarios",
-    ]
+        ]
+    )
 
     if not bundle.similar_scenarios:
         lines.append("- No similar Project 1 scenario document was retrieved.")
@@ -186,7 +405,23 @@ def render_retrieval_markdown(bundle: RetrievalBundle) -> str:
         for item in bundle.similar_scenarios:
             lines.extend(
                 [
-                    f"- **{item.title}** (`score={item.score}`)",
+                    f"- **[{item.evidence_id}] {item.title}** (`score={item.score}`)",
+                    f"  - Why retrieved: {item.retrieval_reason}",
+                    f"  - Matched terms: {', '.join(item.matched_terms) if item.matched_terms else 'None'}",
+                    f"  - Source: `{item.source_path.name}`",
+                    f"  - Excerpt: {item.excerpt}",
+                ]
+            )
+
+    lines.extend(["", "#### Failure Mechanism Evidence"])
+    if not bundle.failure_mechanisms:
+        lines.append("- No Project 1 passage matched the observed failure mechanism.")
+    else:
+        for item in bundle.failure_mechanisms:
+            lines.extend(
+                [
+                    f"- **[{item.evidence_id}] {item.title}** (`score={item.score}`)",
+                    f"  - Why retrieved: {item.retrieval_reason}",
                     f"  - Matched terms: {', '.join(item.matched_terms) if item.matched_terms else 'None'}",
                     f"  - Source: `{item.source_path.name}`",
                     f"  - Excerpt: {item.excerpt}",
@@ -200,7 +435,8 @@ def render_retrieval_markdown(bundle: RetrievalBundle) -> str:
         for item in bundle.safety_context:
             lines.extend(
                 [
-                    f"- **{item.title}** (`score={item.score}`)",
+                    f"- **[{item.evidence_id}] {item.title}** (`score={item.score}`)",
+                    f"  - Why retrieved: {item.retrieval_reason}",
                     f"  - Source: `{item.source_path.name}`",
                     f"  - Excerpt: {item.excerpt}",
                 ]
@@ -213,7 +449,8 @@ def render_retrieval_markdown(bundle: RetrievalBundle) -> str:
         for item in bundle.standards_guidance:
             lines.extend(
                 [
-                    f"- **{item.title}** (`score={item.score}`)",
+                    f"- **[{item.evidence_id}] {item.title}** (`score={item.score}`)",
+                    f"  - Why retrieved: {item.retrieval_reason}",
                     f"  - Source: `{item.source_path.name}`",
                     f"  - Excerpt: {item.excerpt}",
                 ]

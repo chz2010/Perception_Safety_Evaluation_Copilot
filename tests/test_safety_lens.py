@@ -81,6 +81,9 @@ def test_generate_safety_report_includes_required_sections():
     assert "Severity: CRITICAL" in report
     assert "Primary safety concern:" in report
     assert "Observed perception issues:" in report
+    assert "Evidence sufficiency:" in report
+    assert "Operating recommendation:" in report
+    assert "Assessment limitations:" in report
     assert "ISO 21448 / SOTIF:" in report
     assert "Recommended SOTIF actions:" in report
     assert "ISO 8800:" in report
@@ -154,3 +157,20 @@ def test_recommendations_change_with_failure_context():
     assert any("nighttime" in item.lower() for item in sotif_ped.recommendations)
     assert any("traffic lights" in item.lower() or "traffic-signal" in item.lower() for item in iso8800_light.recommendations)
     assert any("traffic-signal" in item.lower() for item in iso26262_light.recommendations)
+
+
+def test_no_expected_objects_is_limited_not_a_proven_pass():
+    result = evaluate_safety_lens(
+        raw_detections=[],
+        display_detections=[],
+        expected_objects={},
+        display_threshold=0.25,
+        low_conf_threshold=0.50,
+        scenario_tags=[],
+        metrics={"ground_truth_boxes_available": False},
+    )
+
+    assert result.severity == "LOW"
+    assert result.evidence_sufficiency == "LIMITED"
+    assert "Do not interpret the LOW severity as proof" in result.operating_recommendation
+    assert any("No expected-object counts" in item for item in result.assessment_limitations)

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import ast
-import hashlib
-import json
 from pathlib import Path
 
 import numpy as np
@@ -42,11 +40,6 @@ from src.perception_safety_copilot.preprocessing import (
     build_enhancement_variants,
     enhance_image_for_visibility,
 )
-from src.perception_safety_copilot.llm_assist import (
-    build_llm_assist_payload,
-    generate_local_llm_assist,
-    render_llm_assist_markdown,
-)
 from src.perception_safety_copilot.reporting import generate_markdown_report
 from src.perception_safety_copilot.scenario_retrieval import (
     render_retrieval_markdown,
@@ -65,15 +58,21 @@ from src.perception_safety_copilot.storage import (
 )
 
 
-OUTPUTS_DIR = Path("outputs")
+PROJECT_ROOT = Path(__file__).resolve().parent
+OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 BATCH_DETECTIONS_GLOB = "perception_yolo_results*.csv"
 BATCH_SUMMARY_GLOB = "perception_eval_summary*.csv"
 BATCH_REPORT_GLOB = "perception_failure_report*.md"
 INTERNAL_CANDIDATE_THRESHOLD = 0.25
 TRAINED_MODEL_CANDIDATES = {
-    "YOLO11s Disturbance Fine-Tuned": Path("runs/bdd100k_training/yolo11s_disturbance_ft/weights/best.pt"),
-    "YOLO11m Disturbance Fine-Tuned": Path("runs/bdd100k_training/yolo11m_disturbance_ft/weights/best.pt"),
+    "YOLO11m BDD100K Stage 1 (Fine-Tuned)": PROJECT_ROOT
+    / "perception_training_outputs/yolo11m_bdd100k_stage1/weights/best.pt",
+    "YOLO11s Disturbance Fine-Tuned": PROJECT_ROOT
+    / "runs/bdd100k_training/yolo11s_disturbance_ft/weights/best.pt",
+    "YOLO11m Disturbance Fine-Tuned": PROJECT_ROOT
+    / "runs/bdd100k_training/yolo11m_disturbance_ft/weights/best.pt",
 }
+DEFAULT_MODEL_LABEL = "YOLO11m BDD100K Stage 1 (Fine-Tuned)"
 
 
 st.set_page_config(
@@ -636,7 +635,7 @@ with st.sidebar:
     st.header("Evaluation Setup")
     model_options = get_model_options()
     model_labels = list(model_options.keys())
-    default_model_index = model_labels.index("YOLO11s Disturbance Fine-Tuned") if "YOLO11s Disturbance Fine-Tuned" in model_options else 0
+    default_model_index = model_labels.index(DEFAULT_MODEL_LABEL) if DEFAULT_MODEL_LABEL in model_options else 0
     selected_model_label = st.selectbox(
         "YOLO model",
         model_labels,
@@ -644,7 +643,7 @@ with st.sidebar:
     )
     model_name = model_options[selected_model_label]
     if Path(model_name).suffix == ".pt" and Path(model_name).exists():
-        st.caption(f"Using fine-tuned checkpoint: `{Path(model_name).name}`")
+        st.caption(f"Using local fine-tuned checkpoint: `{Path(model_name).name}`")
     confidence_threshold = st.slider("Detection confidence threshold", 0.05, 0.95, 0.25, 0.05)
     low_confidence_threshold = st.slider("Low-confidence safety threshold", 0.10, 0.95, 0.50, 0.05)
     st.divider()
@@ -687,7 +686,7 @@ with st.sidebar:
         model_labels,
         default=[
             label
-            for label in ["YOLO11s", "YOLO11m", "YOLO11l", "YOLO11s Disturbance Fine-Tuned"]
+            for label in ["YOLO11s", "YOLO11m", "YOLO11l", DEFAULT_MODEL_LABEL]
             if label in model_options
         ],
         disabled=not run_model_benchmark_table,
@@ -695,9 +694,10 @@ with st.sidebar:
     benchmark_model_specs = [(label, model_options[label]) for label in benchmark_model_names]
     expected_objects_text = st.text_area(
         "Expected objects",
-        value="person: 1\ncar: 2\ntraffic light: 1",
+        value="",
         height=120,
-        help="Examples: person: 1, car: 2, bicycle: 1. This drives safety severity even when objects disappear above the display threshold.",
+        placeholder="person: 1\ncar: 2",
+        help="Enter only objects known to be present. Leave blank when no ground truth or manual review is available.",
     )
     st.caption(
         f"Safety lens always keeps raw detections above the internal candidate threshold {INTERNAL_CANDIDATE_THRESHOLD:.2f}. "
@@ -712,28 +712,14 @@ with st.sidebar:
         help="Used to enrich the safety report. Later this can be replaced by a live MCP call.",
     )
     st.divider()
-    st.header("LLM Assist")
-    enable_llm_assist = st.checkbox("Enable local LLM assist", value=False)
-    llm_model_name = st.text_input(
-        "Local LLM model",
-        value="qwen2.5:7b-instruct",
-        help="Used only for narrative assist. Deterministic severity and metrics remain the source of truth.",
-        disabled=not enable_llm_assist,
-    )
-    llm_base_url = st.text_input(
-        "Local LLM endpoint",
-        value="http://localhost:11434",
-        help="Ollama-compatible `/api/generate` endpoint.",
-        disabled=not enable_llm_assist,
-    )
-    st.divider()
     st.subheader("Saved Evaluations")
     render_recent_history()
 
 scenario_name = st.text_input(
-    "Scenario name",
-    value="Urban driving scene with vulnerable road users",
-    placeholder="Example: Night urban AEB pedestrian crossing",
+    "Known scenario context (optional)",
+    value="",
+    placeholder="Example: nighttime urban crosswalk in rain",
+    help="Enter only conditions known from the source data or human review. Leave blank to avoid injecting assumptions.",
 )
 
 image_source = st.radio("Image source", ["Upload image", "Project 1 / nuScenes sample"], horizontal=True)
@@ -849,13 +835,13 @@ if enable_enhancement:
     preview_left, preview_right = st.columns(2)
     with preview_left:
         st.caption("Uploaded image")
-        st.image(image_rgb, width="stretch")
+        st.image(image_rgb, use_column_width=True)
     with preview_right:
         st.caption("Enhanced image used for YOLO inference")
-        st.image(inference_image_rgb, width="stretch")
+        st.image(inference_image_rgb, use_column_width=True)
 else:
     st.caption("Uploaded image used directly for YOLO inference")
-    st.image(image_rgb, width="stretch")
+    st.image(image_rgb, use_column_width=True)
 
 visibility_cols = st.columns(4)
 visibility_cols[0].metric("Visibility", enhanced_visibility.visibility_level)
@@ -869,14 +855,14 @@ if enable_enhancement:
         with preview_left:
             st.caption("Original visibility assessment")
             st.json(original_visibility.__dict__)
-            st.image(image_rgb, width="stretch")
+            st.image(image_rgb, use_column_width=True)
         with preview_right:
             st.caption("Enhanced image used for YOLO inference")
             st.json(enhanced_visibility.__dict__)
-            st.image(inference_image_rgb, width="stretch")
+            st.image(inference_image_rgb, use_column_width=True)
         if learned_enhancement_image is not None:
             st.caption("Learned enhancement preview (Zero-DCE)")
-            st.image(learned_enhancement_image, width="stretch")
+            st.image(learned_enhancement_image, use_column_width=True)
         elif zero_dce_error:
             st.warning(zero_dce_error)
 
@@ -976,7 +962,9 @@ if run_model_benchmark_table and benchmark_model_names:
         metrics["model_benchmark"] = model_benchmark_df.to_dict("records")
         metrics["best_benchmark_model"] = str(best_model_row["model"])
         metrics["best_benchmark_model_detections"] = int(best_model_row["detections"])
-scenario_tags = infer_scenario_tags(" ".join(part for part in [scenario_name, nuscenes_context] if part))
+scenario_context_parts = [scenario_name, nuscenes_context]
+scenario_tags = infer_scenario_tags(" ".join(part for part in scenario_context_parts if part))
+grounded_scenario_context = scenario_name or nuscenes_context
 try:
     report = generate_markdown_report(
         scenario_name=scenario_name,
@@ -1007,31 +995,18 @@ safety_lens_result = evaluate_safety_lens(
 )
 safety_lens_markdown = generate_safety_report(
     safety_lens_result,
-    scenario_name=scenario_name or nuscenes_context,
+    scenario_name=grounded_scenario_context,
     metrics=metrics,
 )
 retrieval_bundle = retrieve_project1_evidence(
-    scenario_name=scenario_name or nuscenes_context,
+    scenario_name=grounded_scenario_context,
     scenario_tags=scenario_tags,
+    detected_objects=safety_lens_result.detected_objects,
     expected_objects=expected_counts,
     low_confidence_expected_objects=safety_lens_result.low_confidence_expected_objects,
     missed_expected_objects=safety_lens_result.missed_expected_objects,
 )
 retrieval_markdown = render_retrieval_markdown(retrieval_bundle)
-
-llm_payload = build_llm_assist_payload(
-    scenario_name=scenario_name or nuscenes_context,
-    scenario_tags=scenario_tags,
-    safety_result=safety_lens_result,
-    retrieval_bundle=retrieval_bundle,
-    metrics=metrics,
-)
-llm_payload_key = hashlib.sha256(json.dumps(llm_payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
-
-if "llm_assist_results" not in st.session_state:
-    st.session_state["llm_assist_results"] = {}
-
-cached_llm_result = st.session_state["llm_assist_results"].get(llm_payload_key)
 report = report + "\n\n" + safety_lens_markdown + "\n\n" + retrieval_markdown
 if include_project1_context:
     project1_context = load_nuscenes_safety_profile(Path(project1_profile_path))
@@ -1048,37 +1023,22 @@ if include_project1_context:
 result_left, result_center = st.columns(2)
 with result_left:
     st.subheader("Original Image")
-    st.image(image_rgb, width="stretch")
+    st.image(image_rgb, use_column_width=True)
 
 with result_center:
     st.subheader("Detected Objects")
-    st.image(annotated, width="stretch")
+    st.image(annotated, use_column_width=True)
 
 st.subheader("Safety Lens")
 st.markdown(safety_lens_markdown)
 
-st.subheader("Scenario Retrieval Layer")
-st.markdown(retrieval_markdown)
-
-st.subheader("LLM Assist Layer")
-if not enable_llm_assist:
-    st.info("Enable local LLM assist in the sidebar to generate scene summary, HARA-style reasoning, and ASIL hint text.")
-else:
-    generate_llm = st.button("Generate / Refresh LLM Assist")
-    if generate_llm:
-        with st.spinner("Running local LLM assist..."):
-            cached_llm_result = generate_local_llm_assist(
-                llm_payload,
-                model_name=llm_model_name,
-                base_url=llm_base_url,
-            )
-            st.session_state["llm_assist_results"][llm_payload_key] = cached_llm_result
-    if cached_llm_result:
-        llm_markdown = render_llm_assist_markdown(cached_llm_result)
-        st.markdown(llm_markdown)
-        report = report + "\n\n" + llm_markdown
-    else:
-        st.caption("No local LLM assist generated yet for this evidence set.")
+st.subheader("Safety Evidence")
+st.caption(
+    "Relevant Project 1 scenarios and standards passages are retrieved as supporting evidence. "
+    "Weak or unrelated matches are omitted."
+)
+with st.expander("Inspect supporting Project 1 evidence", expanded=False):
+    st.markdown(retrieval_markdown)
 
 st.subheader("Human Review Layer")
 review_state = st.radio(
@@ -1089,7 +1049,7 @@ review_state = st.radio(
 review_notes = st.text_area(
     "Engineer review notes",
     value="",
-    placeholder="Confirm, reject, or refine the scenario match, HARA-style reasoning, and ASIL hint here.",
+    placeholder="Confirm, reject, or refine the Safety Lens finding and supporting evidence here.",
     height=120,
 )
 human_review_markdown = "\n".join(
@@ -1193,10 +1153,10 @@ else:
             case_left, case_right = st.columns(2)
             with case_left:
                 st.caption("Original")
-                st.image(case["image_rgb"], width="stretch")
+                st.image(case["image_rgb"], use_column_width=True)
             with case_right:
                 st.caption("Detected")
-                st.image(case["annotated_rgb"], width="stretch")
+                st.image(case["annotated_rgb"], use_column_width=True)
             st.markdown(
                 "\n".join(
                     [

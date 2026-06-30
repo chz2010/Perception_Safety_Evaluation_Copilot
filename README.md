@@ -17,6 +17,8 @@ This project complements:
 
 - YOLO-based object detection evaluation for driving images
 - Safety Lens reporting for missed objects, low-confidence detections, and safety implications
+- independent multi-retrieval for scenario similarity, failure mechanisms, and standard-specific guidance
+- traceable Project 1 evidence supporting deterministic Safety Lens findings
 - expected-object input for scenario-aware perception analysis
 - threshold sensitivity and confidence-based risk interpretation
 - standards-aware reasoning support for:
@@ -31,6 +33,23 @@ This project complements:
   - occlusion
 - disturbance-focused fine-tuning workflow using BDD100K YOLO-format data
 - batch evaluation dashboard and local reporting workflow
+
+## Safety Lens Architecture
+
+```text
+Deterministic evidence
+  detections, misses, confidence, metrics, severity
+                    |
+                    v
+Independent multi-retrieval
+  scenario match | failure mechanism | SOTIF | ISO 8800 | ISO 26262
+                    |
+                    v
+Human review
+  confirm | reject | edit | trace findings to requirements and tests
+```
+
+Safety Lens is intentionally deterministic: measured detections, expected-object failures, thresholds, metrics, visibility, and robustness results drive its severity and recommendations. Project 1 retrieval supplies supporting standards and scenario evidence, but it does not override the measured result. Leave the scenario and expected-object fields blank unless the information is known from annotations or human review.
 
 ## Screenshots
 
