@@ -23,12 +23,7 @@ from src.perception_safety_copilot.nuscenes_connector import (
     is_nuscenes_root,
 )
 from src.perception_safety_copilot.project1_bridge import (
-    DEFAULT_NUSCENES_PROFILE,
     DEFAULT_PROJECT1_DIR,
-    build_project1_context_section,
-    build_project1_standards_section,
-    load_nuscenes_safety_profile,
-    load_project1_standard_context,
 )
 from src.perception_safety_copilot.learned_enhancement import (
     ZeroDceModelUnavailable,
@@ -41,10 +36,10 @@ from src.perception_safety_copilot.preprocessing import (
     enhance_image_for_visibility,
 )
 from src.perception_safety_copilot.reporting import generate_markdown_report
-from src.perception_safety_copilot.scenario_retrieval import (
-    render_retrieval_markdown,
-    retrieve_project1_evidence,
-)
+from src.perception_safety_copilot.evidence_ingestion import index_saved_evaluation
+from src.perception_safety_copilot.retrieval_orchestrator import RetrievalOrchestrator
+from src.perception_safety_copilot.scenario_retrieval import render_retrieval_markdown
+from src.perception_safety_copilot.settings import settings
 from src.perception_safety_copilot.safety_lens import (
     evaluate_safety_lens,
     generate_safety_report,
@@ -106,6 +101,11 @@ def get_model_options() -> dict[str, str]:
 @st.cache_resource(show_spinner="Loading Zero-DCE learned enhancement model...")
 def get_zero_dce_model():
     return load_zero_dce_model()
+
+
+@st.cache_resource(show_spinner=False)
+def get_retrieval_orchestrator() -> RetrievalOrchestrator:
+    return RetrievalOrchestrator()
 
 
 @st.cache_data(show_spinner=False)
@@ -704,12 +704,11 @@ with st.sidebar:
         "The display threshold only controls what is shown as normal detections."
     )
     st.divider()
-    st.header("Project 1 Bridge")
-    include_project1_context = st.checkbox("Add Project 1 safety context", value=True)
-    project1_profile_path = st.text_input(
-        "Project 1 nuScenes profile",
-        value=str(DEFAULT_NUSCENES_PROFILE),
-        help="Used to enrich the safety report. Later this can be replaced by a live MCP call.",
+    st.header("Evidence Retrieval")
+    include_project1_context = st.checkbox("Use Project 1 MCP evidence", value=True)
+    st.caption(
+        "Standards/video evidence: live MCP with explicit lexical fallback. "
+        f"Historical evaluations: local embeddings (`{settings.local_embedding_model}`)."
     )
     st.divider()
     st.subheader("Saved Evaluations")
@@ -993,32 +992,23 @@ safety_lens_result = evaluate_safety_lens(
     scenario_tags=scenario_tags,
     metrics=metrics,
 )
+metrics["safety_lens_severity"] = safety_lens_result.severity
 safety_lens_markdown = generate_safety_report(
     safety_lens_result,
     scenario_name=grounded_scenario_context,
     metrics=metrics,
 )
-retrieval_bundle = retrieve_project1_evidence(
+retrieval_bundle = get_retrieval_orchestrator().retrieve(
     scenario_name=grounded_scenario_context,
     scenario_tags=scenario_tags,
     detected_objects=safety_lens_result.detected_objects,
     expected_objects=expected_counts,
     low_confidence_expected_objects=safety_lens_result.low_confidence_expected_objects,
     missed_expected_objects=safety_lens_result.missed_expected_objects,
+    include_project1=include_project1_context,
 )
 retrieval_markdown = render_retrieval_markdown(retrieval_bundle)
 report = report + "\n\n" + safety_lens_markdown + "\n\n" + retrieval_markdown
-if include_project1_context:
-    project1_context = load_nuscenes_safety_profile(Path(project1_profile_path))
-    standards_context = load_project1_standard_context()
-    context_query = nuscenes_context or scenario_name or "perception dataset coverage and safety evaluation"
-    report = (
-        report
-        + "\n\n"
-        + build_project1_standards_section(standards_context)
-        + "\n\n"
-        + build_project1_context_section(project1_context, context_query)
-    )
 
 result_left, result_center = st.columns(2)
 with result_left:
@@ -1034,8 +1024,8 @@ st.markdown(safety_lens_markdown)
 
 st.subheader("Safety Evidence")
 st.caption(
-    "Relevant Project 1 scenarios and standards passages are retrieved as supporting evidence. "
-    "Weak or unrelated matches are omitted."
+    "Measured results remain authoritative. Project 1 MCP evidence and semantically similar "
+    "Project 3 evaluations are displayed separately with retrieval provenance."
 )
 with st.expander("Inspect supporting Project 1 evidence", expanded=False):
     st.markdown(retrieval_markdown)
@@ -1184,7 +1174,21 @@ if save_button:
         metrics=metrics,
         report_markdown=report,
     )
-    st.success(f"Evaluation saved to {Path(DEFAULT_DB_PATH)} with ID {evaluation_id}.")
+    index_message = ""
+    if settings.local_embeddings_enabled:
+        try:
+            index_saved_evaluation(
+                evaluation_id,
+                db_path=DEFAULT_DB_PATH,
+                index=get_retrieval_orchestrator().evaluation_index,
+                review_notes=f"{review_state}: {review_notes}",
+            )
+            index_message = " and indexed with local embeddings"
+        except Exception as exc:
+            index_message = f"; local indexing unavailable ({exc.__class__.__name__})"
+    st.success(
+        f"Evaluation saved to {Path(DEFAULT_DB_PATH)} with ID {evaluation_id}{index_message}."
+    )
 
 st.subheader("Generated Safety Report")
 st.markdown(report)

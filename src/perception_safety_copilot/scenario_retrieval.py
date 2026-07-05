@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from .project1_bridge import (
     DEFAULT_ISO_26262_SCHEME,
@@ -17,12 +18,15 @@ from .project1_bridge import (
 class RetrievedContext:
     evidence_id: str
     title: str
-    source_path: Path
+    source_path: Path | None
     layer: str
-    score: int
+    score: float
     matched_terms: list[str]
     excerpt: str
     retrieval_reason: str
+    source_type: str = "project1_document"
+    retrieval_method: str = "local_lexical_fallback"
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -34,6 +38,8 @@ class RetrievalBundle:
     failure_mechanisms: list[RetrievedContext]
     safety_context: list[RetrievedContext]
     standards_guidance: list[RetrievedContext]
+    historical_evaluations: list[RetrievedContext] = field(default_factory=list)
+    retrieval_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def _normalize(text: str) -> str:
@@ -245,6 +251,9 @@ def _retrieve(
             matched_terms=item.matched_terms,
             excerpt=item.excerpt,
             retrieval_reason=item.retrieval_reason,
+            source_type=item.source_type,
+            retrieval_method=item.retrieval_method,
+            metadata=item.metadata,
         )
         for index, item in enumerate(ranked, start=1)
     ]
@@ -380,6 +389,10 @@ def retrieve_project1_evidence(
         failure_mechanisms=failure_mechanisms,
         safety_context=safety_context,
         standards_guidance=standards_guidance,
+        retrieval_metadata={
+            "project1_method": "local_lexical_fallback",
+            "fallback_used": True,
+        },
     )
 
 
@@ -387,73 +400,57 @@ def render_retrieval_markdown(bundle: RetrievalBundle) -> str:
     lines = [
         "### Supporting Safety Evidence",
         "",
-        "Independent retrieval is used so scene similarity, failure mechanisms, and standards guidance do not compete in one search.",
+        "Independent retrieval keeps measured evidence, historical cases, and standards guidance distinct.",
     ]
+    if bundle.retrieval_metadata:
+        lines.extend(["", "#### Retrieval Provenance"])
+        for key, value in sorted(bundle.retrieval_metadata.items()):
+            lines.append(f"- {key.replace('_', ' ').title()}: `{value}`")
     if bundle.grounding_notes:
         lines.extend(["", "#### Grounding Status"])
         lines.extend(f"- {note}" for note in bundle.grounding_notes)
-    lines.extend(
-        [
-        "",
-        "#### Similar Known Scenarios",
-        ]
+
+    def append_contexts(title: str, empty_message: str, items: list[RetrievedContext]) -> None:
+        lines.extend(["", f"#### {title}"])
+        if not items:
+            lines.append(f"- {empty_message}")
+            return
+        for item in items:
+            source = item.source_path.name if item.source_path else item.source_type
+            lines.extend(
+                [
+                    f"- **[{item.evidence_id}] {item.title}** (`score={item.score}`)",
+                    f"  - Why retrieved: {item.retrieval_reason}",
+                    f"  - Retrieval: `{item.retrieval_method}`",
+                    f"  - Source: `{source}`",
+                    f"  - Matched terms: {', '.join(item.matched_terms) if item.matched_terms else 'N/A'}",
+                    f"  - Excerpt: {item.excerpt}",
+                ]
+            )
+
+    append_contexts(
+        "Similar Known Scenarios",
+        "No similar Project 1 scenario document was retrieved.",
+        bundle.similar_scenarios,
     )
-
-    if not bundle.similar_scenarios:
-        lines.append("- No similar Project 1 scenario document was retrieved.")
-    else:
-        for item in bundle.similar_scenarios:
-            lines.extend(
-                [
-                    f"- **[{item.evidence_id}] {item.title}** (`score={item.score}`)",
-                    f"  - Why retrieved: {item.retrieval_reason}",
-                    f"  - Matched terms: {', '.join(item.matched_terms) if item.matched_terms else 'None'}",
-                    f"  - Source: `{item.source_path.name}`",
-                    f"  - Excerpt: {item.excerpt}",
-                ]
-            )
-
-    lines.extend(["", "#### Failure Mechanism Evidence"])
-    if not bundle.failure_mechanisms:
-        lines.append("- No Project 1 passage matched the observed failure mechanism.")
-    else:
-        for item in bundle.failure_mechanisms:
-            lines.extend(
-                [
-                    f"- **[{item.evidence_id}] {item.title}** (`score={item.score}`)",
-                    f"  - Why retrieved: {item.retrieval_reason}",
-                    f"  - Matched terms: {', '.join(item.matched_terms) if item.matched_terms else 'None'}",
-                    f"  - Source: `{item.source_path.name}`",
-                    f"  - Excerpt: {item.excerpt}",
-                ]
-            )
-
-    lines.extend(["", "#### Relevant Safety Context"])
-    if not bundle.safety_context:
-        lines.append("- No Project 1 safety-context document was retrieved.")
-    else:
-        for item in bundle.safety_context:
-            lines.extend(
-                [
-                    f"- **[{item.evidence_id}] {item.title}** (`score={item.score}`)",
-                    f"  - Why retrieved: {item.retrieval_reason}",
-                    f"  - Source: `{item.source_path.name}`",
-                    f"  - Excerpt: {item.excerpt}",
-                ]
-            )
-
-    lines.extend(["", "#### Project 1 Standards Guidance"])
-    if not bundle.standards_guidance:
-        lines.append("- No standards guidance document was retrieved.")
-    else:
-        for item in bundle.standards_guidance:
-            lines.extend(
-                [
-                    f"- **[{item.evidence_id}] {item.title}** (`score={item.score}`)",
-                    f"  - Why retrieved: {item.retrieval_reason}",
-                    f"  - Source: `{item.source_path.name}`",
-                    f"  - Excerpt: {item.excerpt}",
-                ]
-            )
-
+    append_contexts(
+        "Failure Mechanism Evidence",
+        "No Project 1 failure-mechanism evidence was retrieved.",
+        bundle.failure_mechanisms,
+    )
+    append_contexts(
+        "Relevant Safety Context",
+        "No Project 1 safety-context evidence was retrieved.",
+        bundle.safety_context,
+    )
+    append_contexts(
+        "Project 1 Standards Guidance",
+        "No standards guidance was retrieved.",
+        bundle.standards_guidance,
+    )
+    append_contexts(
+        "Similar Historical Project 3 Evaluations",
+        "No semantically similar saved evaluation was retrieved.",
+        bundle.historical_evaluations,
+    )
     return "\n".join(lines)

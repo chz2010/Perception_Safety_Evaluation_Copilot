@@ -7,6 +7,7 @@ data/*.sqlite3-*
 *.pt
 *.pth
 runs/
+vectordb/
 .DS_Store
 YOLO-format dataset/
 training/bdd100k_smoke_subset/

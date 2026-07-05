@@ -51,6 +51,66 @@ Human review
 
 Safety Lens is intentionally deterministic: measured detections, expected-object failures, thresholds, metrics, visibility, and robustness results drive its severity and recommendations. Project 1 retrieval supplies supporting standards and scenario evidence, but it does not override the measured result. Leave the scenario and expected-object fields blank unless the information is known from annotations or human review.
 
+## Evidence Retrieval Architecture
+
+Project 3 now uses three explicit retrieval paths with provenance in every
+generated report:
+
+```text
+Measured YOLO / ground-truth evidence
+                 |
+                 v
+       Deterministic Safety Lens
+                 |
+       +---------+------------------+
+       |                            |
+       v                            v
+Project 1 live MCP           Project 3 local embeddings
+standards + video            saved evaluations + reviews
+       |                            |
+       +-------------+--------------+
+                     v
+          Supporting evidence report
+```
+
+- `project1_mcp`: live standards and video retrieval from the Project 1 MCP
+  knowledge service
+- `project3_local_embedding`: semantic retrieval over saved Project 3
+  evaluation snapshots using a local multilingual SentenceTransformer and a
+  separate Chroma collection
+- `local_lexical_fallback`: direct local-document matching used only when the
+  MCP service is unavailable and fallback is enabled
+
+Project 1 remains the owner of the standards/video knowledge base. Project 3
+does not duplicate that index. Its local embedding collection contains only
+Project 3 evaluation and failure-history evidence. Collections include the
+embedding model name so vectors from different models are never mixed.
+
+Copy `.env.example` to `.env` to configure retrieval. Important defaults:
+
+```text
+PROJECT1_MCP_ENABLED=true
+PROJECT1_MCP_EMBEDDING_BACKEND=local
+PROJECT1_MCP_VIDEO_ENABLED=false
+LOCAL_EMBEDDINGS_ENABLED=true
+LOCAL_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+LEXICAL_FALLBACK_ENABLED=true
+```
+
+Saving an evaluation snapshot writes the SQLite audit record first and then
+upserts the evaluation into the local semantic index. Existing snapshots can
+be re-indexed with:
+
+```bash
+python scripts/index_evaluation_evidence.py
+```
+
+The first local-embedding run downloads the configured model. Later document
+and query embeddings run locally without per-token embedding API charges.
+Project 1's existing video collection uses OpenAI embeddings, so MCP video
+retrieval is disabled by default. Enable `PROJECT1_MCP_VIDEO_ENABLED=true`
+only when Project 1 has an OpenAI key and video evidence is required.
+
 ## Screenshots
 
 ### Detection Dashboard

@@ -1,8 +1,12 @@
 streamlit>=1.36
 ultralytics>=8.2
-opencv-python>=4.9
+opencv-python>=4.9,<4.12
 pandas>=2.2
-numpy>=1.26
+numpy>=1.26,<2
 pillow>=10.3
 pytest>=8.2
-
+mcp[cli]>=1.9,<2
+chromadb==0.5.3
+posthog<4
+sentence-transformers>=3.0,<4
+python-dotenv>=1.0

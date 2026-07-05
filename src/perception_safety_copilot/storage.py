@@ -99,3 +99,46 @@ def load_recent_evaluations(db_path: Path = DEFAULT_DB_PATH, limit: int = 20) ->
         records.append(record)
     return records
 
+
+def load_evaluation(evaluation_id: int, db_path: Path = DEFAULT_DB_PATH) -> dict[str, Any] | None:
+    init_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT id, created_at, scenario_name, image_name, model_name,
+                   confidence_threshold, low_confidence_threshold,
+                   detections_json, expected_json, metrics_json, report_markdown
+            FROM evaluations
+            WHERE id = ?
+            """,
+            (evaluation_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    record = dict(row)
+    for key in ("detections_json", "expected_json", "metrics_json"):
+        record[key.removesuffix("_json")] = json.loads(record.pop(key))
+    return record
+
+
+def load_evaluations_for_indexing(db_path: Path = DEFAULT_DB_PATH) -> list[dict[str, Any]]:
+    init_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT id, created_at, scenario_name, image_name, model_name,
+                   confidence_threshold, low_confidence_threshold,
+                   detections_json, expected_json, metrics_json, report_markdown
+            FROM evaluations
+            ORDER BY id
+            """
+        ).fetchall()
+    records: list[dict[str, Any]] = []
+    for row in rows:
+        record = dict(row)
+        for key in ("detections_json", "expected_json", "metrics_json"):
+            record[key.removesuffix("_json")] = json.loads(record.pop(key))
+        records.append(record)
+    return records
