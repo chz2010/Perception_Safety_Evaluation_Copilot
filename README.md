@@ -12,6 +12,12 @@ Project 3 portfolio MVP: a computer-vision evaluation tool that connects percept
 | Safety stance | Measured detections and annotations control severity; retrieved standards context can support but never override the result. |
 | Delivery status | Working local portfolio MVP with batch evaluation, screenshots, tests, and reproducible BDD100K training helpers. |
 
+## Demo
+
+A short demo video is available here:
+
+[Watch the demo video on Google Drive](https://drive.google.com/file/d/1k4eITpQ-re5KIuLOyQJ4AhzuM8ZwY2eS/view?usp=sharing)
+
 ## Overview
 
 Perception Safety Evaluation Copilot is designed to evaluate object-detection behavior in driving scenes and turn raw perception outputs into safety-relevant evidence. The tool combines YOLO-based detection, expected-object analysis, threshold sensitivity, perception failure reporting, and standards-aware Safety Lens reasoning aligned with ISO 21448 / SOTIF, ISO 26262, and ISO/PAS 8800.
