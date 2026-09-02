@@ -2,6 +2,16 @@
 
 Project 3 portfolio MVP: a computer-vision evaluation tool that connects perception AI results with safety engineering reasoning.
 
+## Recruiter Snapshot
+
+| Area | Evidence |
+| --- | --- |
+| Engineering problem | Convert object-detection errors into traceable, safety-relevant findings for human review. |
+| System design | YOLO inference, deterministic Safety Lens rules, independent evidence retrieval, SQLite audit records, and Streamlit reporting. |
+| Model evidence | YOLO11m Stage 1: 0.738 precision, 0.508 recall, 0.558 mAP50, and 0.318 mAP50-95 on the documented validation run. |
+| Safety stance | Measured detections and annotations control severity; retrieved standards context can support but never override the result. |
+| Delivery status | Working local portfolio MVP with batch evaluation, screenshots, tests, and reproducible BDD100K training helpers. |
+
 ## Overview
 
 Perception Safety Evaluation Copilot is designed to evaluate object-detection behavior in driving scenes and turn raw perception outputs into safety-relevant evidence. The tool combines YOLO-based detection, expected-object analysis, threshold sensitivity, perception failure reporting, and standards-aware Safety Lens reasoning aligned with ISO 21448 / SOTIF, ISO 26262, and ISO/PAS 8800.
@@ -36,17 +46,16 @@ This project complements:
 
 ## Safety Lens Architecture
 
-```text
-Deterministic evidence
-  detections, misses, confidence, metrics, severity
-                    |
-                    v
-Independent multi-retrieval
-  scenario match | failure mechanism | SOTIF | ISO 8800 | ISO 26262
-                    |
-                    v
-Human review
-  confirm | reject | edit | trace findings to requirements and tests
+```mermaid
+flowchart TD
+    E["Deterministic evidence<br/>detections, misses, confidence, metrics"]
+    L["Safety Lens<br/>severity and recommended actions"]
+    R["Independent retrieval<br/>scenario, failure mechanism, SOTIF, ISO 8800, ISO 26262"]
+    H["Human review<br/>confirm, reject, edit, trace to requirements and tests"]
+
+    E --> L
+    L --> R
+    R --> H
 ```
 
 Safety Lens is intentionally deterministic: measured detections, expected-object failures, thresholds, metrics, visibility, and robustness results drive its severity and recommendations. Project 1 retrieval supplies supporting standards and scenario evidence, but it does not override the measured result. Leave the scenario and expected-object fields blank unless the information is known from annotations or human review.
@@ -56,21 +65,14 @@ Safety Lens is intentionally deterministic: measured detections, expected-object
 Project 3 now uses three explicit retrieval paths with provenance in every
 generated report:
 
-```text
-Measured YOLO / ground-truth evidence
-                 |
-                 v
-       Deterministic Safety Lens
-                 |
-       +---------+------------------+
-       |                            |
-       v                            v
-Project 1 live MCP           Project 3 local embeddings
-standards + video            saved evaluations + reviews
-       |                            |
-       +-------------+--------------+
-                     v
-          Supporting evidence report
+```mermaid
+flowchart TD
+    M["Measured YOLO / ground-truth evidence"] --> S["Deterministic Safety Lens"]
+    S --> P1["Project 1 live MCP<br/>standards and video"]
+    S --> P3["Project 3 local embeddings<br/>saved evaluations and reviews"]
+    P1 --> O["Supporting evidence report<br/>with source provenance"]
+    P3 --> O
+    O --> H["Human review"]
 ```
 
 - `project1_mcp`: live standards and video retrieval from the Project 1 MCP
