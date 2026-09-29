@@ -26,8 +26,8 @@ Perception Safety Evaluation Copilot is designed to evaluate object-detection be
 
 This project complements:
 
-- `Autonomous_Driving_Safety_Analyst` by bringing perception-model evidence into standards-aware safety analysis
-- `Agentic_Document_AI_Platform_for_Safety_Engineering` by creating model evaluation artifacts that can later connect to requirements, traceability, and validation workflows
+- [Project 1: Autonomous Driving Safety Analyst](https://github.com/chz2010/Autonomous_Driving_Safety_Analyst_V1.1) by using its MCP standards and scenario evidence as supporting context
+- [Project 2: Agentic Document AI Platform for Safety Engineering](https://github.com/chz2010/Agentic_Document_AI_Platform_for_Safety_Engineering) by creating model evaluation artifacts that can later connect to requirements, traceability, and validation workflows
 
 ## Key Features
 
@@ -212,13 +212,13 @@ Training converged stably across 20 epochs, with decreasing box loss, classifica
 
 Earlier YOLO11s fine-tuning notes are available in [docs/yolo11s_finetuning_summary.md](docs/yolo11s_finetuning_summary.md).
 
-## Future Integration
+## Cross-Project Integration
 
 ### Project 1: Autonomous Driving Safety Analyst
 
-- retrieve standards and scenario context through MCP
-- connect Safety Lens findings to ISO 26262, ISO 21448 / SOTIF, and ISO/PAS 8800 guidance
-- enrich scene interpretation with known scenario and exposure context
+- live MCP retrieval supplies supporting standards and scenario context when the service is available
+- Safety Lens findings retain their measured severity; retrieved ISO 26262, ISO 21448 / SOTIF, and ISO/PAS 8800 context does not override it
+- further enrichment with known scenario and exposure context remains a future extension
 
 ### Project 2: Agentic Document AI Platform for Safety Engineering
 
